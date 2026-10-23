@@ -30,7 +30,7 @@ def register_new_company(conn, *, email, password, name, inn, industry, register
     return user, company
 
 def create_draft(conn, *, actor_id, product_code, amount, term, purpose,
-                 revenue, expenses, debt_payments, age_months, cash_reserve=None):
+                 revenue, expenses, debt_payments, age_months, cash_reserve=None, document_confirmed=False):
     company = actor_company(conn, actor_id)
     # Денежные значения передавайте Decimal или строками, никогда float.
     for v in (amount,revenue,expenses,debt_payments,cash_reserve):
@@ -44,11 +44,12 @@ def create_draft(conn, *, actor_id, product_code, amount, term, purpose,
         VALUES(:company,:actor,:product,:amount,:term,:purpose) RETURNING id"""),
         {'company':company,'actor':actor_id,'product':product,'amount':Decimal(amount),'term':term,'purpose':purpose})
     profile = conn.scalar(text("""INSERT INTO alfa.financial_profiles
-        (application_id,revision,revenue,expenses,debt_payments,age_months,cash_reserve)
-        VALUES(:app,1,:revenue,:expenses,:debt,:age,:reserve) RETURNING id"""),
+        (application_id,revision,revenue,expenses,debt_payments,age_months,cash_reserve,document_confirmed)
+        VALUES(:app,1,:revenue,:expenses,:debt,:age,:reserve,:confirmed) RETURNING id"""),
         {'app':application,'revenue':Decimal(revenue),'expenses':Decimal(expenses),
          'debt':Decimal(debt_payments),'age':age_months,
-         'reserve':None if cash_reserve is None else Decimal(cash_reserve)})
+         'reserve':None if cash_reserve is None else Decimal(cash_reserve),
+         'confirmed': document_confirmed})
     return application, profile
 
 def list_my_applications(conn, actor_id):
