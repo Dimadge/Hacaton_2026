@@ -7,6 +7,7 @@ from ...database import get_connection
 from ...schemas.decision import (BankQueueItem, BankApplicationOut,
                                  BankDecisionIn, EvaluateOut)
 from ...services import decisions
+from ...services.scoring_adapter import execute_and_save_scoring
 
 router = APIRouter(prefix='/bank', tags=['Банк'])
 
@@ -40,3 +41,8 @@ def decision(application_id: UUID, data: BankDecisionIn,
              actor: Actor = Depends(require_bank_employee),
              conn: Connection = Depends(get_connection)):
     return decisions.manual_decision(conn, actor, application_id, data)
+
+@router.post('/applications/{application_id}/score')
+def run_scoring(application_id: UUID, actor: Actor = Depends(require_bank_employee),
+                conn: Connection = Depends(get_connection)):
+    return execute_and_save_scoring(conn, application_id)

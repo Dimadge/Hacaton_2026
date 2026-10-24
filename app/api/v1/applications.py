@@ -1,6 +1,7 @@
 from uuid import UUID
 from fastapi import APIRouter, Depends, Header, status
-from sqlalchemy import Connection
+from sqlalchemy import Connection, text
+from ...core.errors import ApiProblem
 from ...core.security import Actor, require_client
 from ...database import get_connection
 from ...schemas.application import (ApplicationCreate, ApplicationPatch,
@@ -11,6 +12,7 @@ from ...schemas.checks import ChecksOut
 from ...schemas.decision import OffersOut
 from ...services import decisions, fulfillment
 from ...schemas.fulfillment import AcceptOfferIn, VersionedAction, FulfillmentOut
+from ...scoring.explain import generate_explanation
 
 router = APIRouter(prefix='/applications', tags=['Заявки'])
 
@@ -114,3 +116,67 @@ def cancel(application_id: UUID, data: VersionedAction,
            actor: Actor = Depends(require_client),
            conn: Connection = Depends(get_connection)):
     return fulfillment.cancel_offer(conn, actor, application_id, data.version)
+
+@router.get('/{application_id}/explanation')
+async def get_application_explanation(
+    application_id: UUID,
+    actor: Actor = Depends(require_client),
+    conn: Connection = Depends(get_connection),
+):
+    app = conn.execute(
+        text("SELECT id, amount, term, status FROM alfa.loan_applications WHERE id=:app AND company_id=:cid"),
+        {"app": application_id, "cid": actor.company_id},
+    ).mappings().first()
+    if not app:
+        raise ApiProblem(404, "NOT_FOUND", "Заявка не найдена")
+
+    run = conn.execute(
+        text("""SELECT r.id, s.max_new_payment
+                FROM alfa.evaluation_runs r
+                LEFT JOIN alfa.scoring_results s ON s.run_id=r.id
+                WHERE r.application_id=:app
+                ORDER BY r.submission_version DESC LIMIT 1"""),
+        {"app": application_id},
+    ).mappings().first()
+    if not run or not run["max_new_payment"]:
+        raise ApiProblem(409, "SCORING_NOT_FOUND", "Скоринг по заявке еще не выполнен")
+
+    decision = conn.execute(
+        text("""SELECT id, decision_type FROM alfa.credit_decisions
+                WHERE run_id=:run ORDER BY sequence_no DESC LIMIT 1"""),
+        {"run": run["id"]},
+    ).mappings().first()
+    if not decision:
+        raise ApiProblem(409, "DECISION_NOT_FOUND", "Решение по заявке еще не сформировано")
+
+    reasons = conn.execute(
+        text("SELECT reason_code FROM alfa.decision_reasons WHERE decision_id=:dec"),
+        {"dec": decision["id"]},
+    ).scalars().all()
+
+    offers_raw = conn.execute(
+        text("""SELECT amount, term, monthly_payment FROM alfa.credit_offers
+                WHERE decision_id=:dec ORDER BY rank ASC"""),
+        {"dec": decision["id"]},
+    ).mappings().all()
+
+    offers = [
+        {"amount": o["amount"], "term_months": o["term"], "monthly_payment": o["monthly_payment"]}
+        for o in offers_raw
+    ]
+
+    explanation = await generate_explanation(
+        decision_type=decision["decision_type"],
+        requested_amount=app["amount"],
+        requested_term=app["term"],
+        max_payment=run["max_new_payment"],
+        offers=offers,
+        reason_codes=list(reasons),
+    )
+
+    return {
+        "application_id": str(application_id),
+        "decision_type": decision["decision_type"],
+        "explanation": explanation,
+        "offers_available": len(offers),
+    }
