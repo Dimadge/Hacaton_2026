@@ -123,13 +123,14 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
                 {"sid": scoring_id, "code": code},
             )
 
-    target_status = app["status"]
-    if out.candidates and out.decision_hint in ("APPROVE", "COUNTER_OFFER"):
-        next_seq = conn.execute(
-            text("SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM alfa.credit_decisions WHERE run_id=:run"),
-            {"run": run_id},
-        ).scalar_one()
+    next_seq = conn.execute(
+        text("SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM alfa.credit_decisions WHERE run_id=:run"),
+        {"run": run_id},
+    ).scalar_one()
 
+    target_status = app["status"]
+
+    if out.candidates and out.decision_hint in ("APPROVE", "COUNTER_OFFER"):
         decision_id = conn.execute(
             text("""INSERT INTO alfa.credit_decisions
                     (application_id, run_id, sequence_no, decision_type, created_by, comment)
@@ -175,6 +176,66 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
             {"app": app_id, "ver": app["version"]},
         )
         target_status = "OFFERED"
+
+    elif out.decision_hint == "MANUAL_REVIEW":
+        decision_id = conn.execute(
+            text("""INSERT INTO alfa.credit_decisions
+                    (application_id, run_id, sequence_no, decision_type, created_by, comment)
+                    VALUES (:app, :run, :seq, 'MANUAL_REVIEW', NULL, :comment)
+                    RETURNING id"""),
+            {
+                "app": app_id,
+                "run": run_id,
+                "seq": next_seq,
+                "comment": "Пограничный скоринговый балл (50-74) или замечания БКИ/ФНС: направлено на ручную проверку",
+            },
+        ).scalar_one()
+
+        for code in out.reason_codes:
+            conn.execute(
+                text("""INSERT INTO alfa.decision_reasons (decision_id, reason_code)
+                        VALUES (:dec_id, :code) ON CONFLICT DO NOTHING"""),
+                {"dec_id": decision_id, "code": code},
+            )
+
+        conn.execute(text("SELECT set_config('app.actor_id', '', true)"))
+        conn.execute(
+            text("""UPDATE alfa.loan_applications
+                    SET status='UNDER_REVIEW'
+                    WHERE id=:app AND version=:ver"""),
+            {"app": app_id, "ver": app["version"]},
+        )
+        target_status = "UNDER_REVIEW"
+
+    elif out.decision_hint == "REJECT":
+        decision_id = conn.execute(
+            text("""INSERT INTO alfa.credit_decisions
+                    (application_id, run_id, sequence_no, decision_type, created_by, comment)
+                    VALUES (:app, :run, :seq, 'REJECT', NULL, :comment)
+                    RETURNING id"""),
+            {
+                "app": app_id,
+                "run": run_id,
+                "seq": next_seq,
+                "comment": "Отказ: критические стоп-факторы или скоринг ниже порога (HIGH risk)",
+            },
+        ).scalar_one()
+
+        for code in out.reason_codes:
+            conn.execute(
+                text("""INSERT INTO alfa.decision_reasons (decision_id, reason_code)
+                        VALUES (:dec_id, :code) ON CONFLICT DO NOTHING"""),
+                {"dec_id": decision_id, "code": code},
+            )
+
+        conn.execute(text("SELECT set_config('app.actor_id', '', true)"))
+        conn.execute(
+            text("""UPDATE alfa.loan_applications
+                    SET status='REJECTED'
+                    WHERE id=:app AND version=:ver"""),
+            {"app": app_id, "ver": app["version"]},
+        )
+        target_status = "REJECTED"
 
     return {
         "application_id": str(app_id),
