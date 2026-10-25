@@ -8,6 +8,7 @@ import { Alert, Button, Card, Field, inputClass, Loader } from "../components/ui
 import { buildDraftSchema, type DraftValues } from "../features/applications/form/schema";
 import { useAuth } from "../features/auth/session";
 import { formatMoney, formatRate, toMoney } from "../lib/format";
+import { newIdempotencyKey } from "../lib/id";
 
 const STEPS = ["Продукт", "Сумма и срок", "Компания", "Финансы", "Итог"];
 
@@ -117,7 +118,7 @@ export function WizardPage() {
       if (send) {
         await api(`/applications/${saved.id}/submit`, {
           token,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: newIdempotencyKey(),
           body: { version: saved.version },
         });
       }

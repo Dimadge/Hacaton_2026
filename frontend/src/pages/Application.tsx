@@ -7,6 +7,7 @@ import { StatusTimeline } from "../components/StatusTimeline";
 import { Alert, Button, Card, ErrorState, Field, inputClass, Loader, Notice, StatusBadge } from "../components/ui";
 import { useAuth } from "../features/auth/session";
 import { productName, reasonText } from "../lib/format";
+import { newIdempotencyKey } from "../lib/id";
 
 export function ApplicationPage() {
   const { id } = useParams();
@@ -66,7 +67,7 @@ export function ApplicationPage() {
     try {
       const result = await api<Fulfillment>(`/applications/${id}/${path}`, {
         token: session!.token,
-        idempotencyKey: path === "submit" ? crypto.randomUUID() : undefined,
+        idempotencyKey: path === "submit" ? newIdempotencyKey() : undefined,
         body,
       });
       setApplication((current) => current ? { ...current, status: result.status, version: result.version } : current);
