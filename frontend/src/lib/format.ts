@@ -35,6 +35,11 @@ export function formatRate(value: Money): string {
   return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(Number(value) * 100)}% годовых`;
 }
 
+export function formatPhone(value: string): string {
+  const match = value.match(/^\+7(\d{3})(\d{3})(\d{2})(\d{2})$/);
+  return match ? `+7 ${match[1]} ${match[2]}-${match[3]}-${match[4]}` : value;
+}
+
 export function formatDate(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -68,9 +73,30 @@ export const REASONS: Record<string, string> = {
   DOCS_MISSING: "Добавьте подтверждающий документ или сведения.",
   RISK_HIGH: "Высокий риск по результатам оценки.",
   RISK_MEDIUM: "Требуется ручная оценка риска.",
-  UNKNOWN_VERIFICATION: "Неизвестный результат проверки: нужна ручная обработка.",
+  UNKNOWN_VERIFICATION: "Результат проверки: нужна ручная обработка.",
 };
 
 export function reasonText(code: string): string {
   return REASONS[code] ?? code;
+}
+
+export function collateralTypeLabel(code: string): string {
+  if (code === "LAND") return "Земельный участок";
+  if (code === "REAL_ESTATE") return "Недвижимость";
+  if (code === "VEHICLE") return "Транспорт";
+  return code;
+}
+
+export function ownershipLabel(code: string): string {
+  if (code === "BORROWER") return "Собственник — заёмщик";
+  if (code === "THIRD_PARTY") return "Собственник — третье лицо";
+  return code;
+}
+
+export function collateralStatusLabel(code: string): string {
+  if (code === "DECLARED") return "Заявлен";
+  if (code === "UNDER_REVIEW") return "На проверке";
+  if (code === "ACCEPTED") return "Принят";
+  if (code === "REJECTED") return "Не принят";
+  return code;
 }

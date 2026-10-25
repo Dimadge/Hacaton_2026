@@ -5,7 +5,7 @@ import type { ApplicationSummary, Company } from "../api/types";
 import { Card, EmptyState, ErrorState, Loader, StatusBadge } from "../components/ui";
 import { newsFor } from "../features/news/catalog";
 import { useAuth } from "../features/auth/session";
-import { formatDate, formatMoney, industryLabel, productName } from "../lib/format";
+import { formatDate, formatMoney, formatPhone, productName } from "../lib/format";
 
 export function DashboardPage() {
   const { session } = useAuth();
@@ -42,7 +42,9 @@ export function DashboardPage() {
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/45">Компания</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight">{company.name}</h1>
-            <p className="mt-2 text-sm text-white/70">ИНН {company.inn} · {industryLabel(company.industry)}</p>
+            <p className="mt-2 text-sm text-white/70">ИНН {company.inn}</p>
+            <p className="mt-1 text-sm text-white/70">Руководитель: {company.director_name || "не указан"}</p>
+            <p className="mt-1 text-sm text-white/70">Телефон: {company.phone ? formatPhone(company.phone) : "не указан"}</p>
           </div>
           <Link className="inline-flex h-11 items-center rounded-lg bg-[#ef3124] px-4 text-sm font-semibold hover:bg-[#d61f14]" to="/client/applications/new">
             Новая заявка

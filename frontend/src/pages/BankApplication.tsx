@@ -1,15 +1,24 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import type { BankApplication, EvaluateResult, ScoreResult } from "../api/types";
+import type { BankApplication, Collateral, EvaluateResult, ScoreResult } from "../api/types";
+import { CollateralList } from "../components/CollateralList";
 import { Alert, Button, Card, ErrorState, Field, inputClass, Loader, StatusBadge } from "../components/ui";
 import { useAuth } from "../features/auth/session";
-import { REASONS, reasonText } from "../lib/format";
+import { REASONS, formatMoney, productName, reasonText } from "../lib/format";
+
+const HIDDEN_BANK_REASONS = new Set([
+  "RISK_MEDIUM",
+  "CREDIT_HISTORY_CRITICAL",
+  "REGISTRY_INACTIVE",
+  "UNKNOWN_VERIFICATION",
+]);
 
 export function BankApplicationPage() {
   const { id } = useParams();
   const { session } = useAuth();
   const [item, setItem] = useState<BankApplication | null>(null);
+  const [collateral, setCollateral] = useState<Collateral[]>([]);
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
@@ -20,8 +29,15 @@ export function BankApplicationPage() {
   const [term, setTerm] = useState("36");
 
   function load() {
-    api<BankApplication>(`/bank/applications/${id}`, { token: session!.token })
-      .then(setItem)
+    const token = session!.token;
+    Promise.all([
+      api<BankApplication>(`/bank/applications/${id}`, { token }),
+      api<Collateral[]>(`/bank/applications/${id}/collateral`, { token }),
+    ])
+      .then(([nextItem, nextCollateral]) => {
+        setItem(nextItem);
+        setCollateral(nextCollateral);
+      })
       .catch((reason) => setError(reason instanceof ApiError ? reason.message : "Карточка недоступна"));
   }
 
@@ -46,13 +62,23 @@ export function BankApplicationPage() {
     }
   }
 
-  if (error && !item) return <ErrorState message={error} onRetry={load} />;
-  if (!item) return <Loader />;
+  const back = (
+    <Link className="inline-flex items-center gap-1 text-sm font-semibold hover:text-[#ef3124]" to="/bank">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+      К списку заявок
+    </Link>
+  );
+
+  if (error && !item) return <div className="space-y-4">{back}<ErrorState message={error} onRetry={load} /></div>;
+  if (!item) return <div className="space-y-4">{back}<Loader /></div>;
 
   return (
     <div className="space-y-4">
+      {back}
       <Card title={item.company_name}>
         <StatusBadge status={item.status} />
+        <p className="mt-3 text-lg font-semibold tracking-tight">{productName(item.product_code)}</p>
+        <p className="mt-1 text-sm">Сумма {formatMoney(item.requested_amount)} · срок {item.term_months} мес.</p>
         <p className="mt-2 text-sm">Версия {item.version}. Подтверждение сведений: {item.document_confirmed ? "да" : "нет"}. Скоринг: {item.scoring_ready ? "есть" : "ещё нет"}.</p>
         {Object.entries(item.verification_results).map(([source, result]) => <p key={source} className="text-sm">{source}: {result}</p>)}
         {item.client_clarification && <p className="mt-2 text-sm">Пояснение клиента: {item.client_clarification}</p>}
@@ -75,6 +101,8 @@ export function BankApplicationPage() {
         {note && <p className="mt-2 text-sm">{note}</p>}
       </Card>
 
+      <Card title="Залог"><CollateralList items={collateral} /></Card>
+
       {item.status === "UNDER_REVIEW" && (
         <Card title="Решение сотрудника">
           <Field label="Действие">
@@ -85,7 +113,7 @@ export function BankApplicationPage() {
             </select>
           </Field>
           <div className="my-3 space-y-1 text-sm">
-            {Object.entries(REASONS).map(([code, label]) => (
+            {Object.entries(REASONS).filter(([code]) => !HIDDEN_BANK_REASONS.has(code)).map(([code, label]) => (
               <label key={code} className="flex gap-2">
                 <input type="checkbox" checked={reasons.includes(code)} onChange={(event) => {
                   setReasons(event.target.checked ? [...reasons, code] : reasons.filter((item) => item !== code));
@@ -103,12 +131,25 @@ export function BankApplicationPage() {
               <Field label="Срок, месяцев"><input className={inputClass} value={term} onChange={(event) => setTerm(event.target.value)} /></Field>
             </div>
           )}
-          <Button className="mt-3" disabled={pending} onClick={() => {
-            if (!window.confirm("Зафиксировать решение?")) return;
-            const offers = action === "APPROVE" ? [{ amount: amount.trim(), term_months: Number(term) }] : [];
-            run("decision", { version: item.version, action, reason_codes: reasons, comment: comment || null, offers })
-              .then(() => setNote(reasons.map(reasonText).join(" ")));
-          }}>Сохранить решение</Button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button disabled={pending} onClick={() => {
+              if (!window.confirm("Зафиксировать решение?")) return;
+              const offers = action === "APPROVE" ? [{ amount: amount.trim(), term_months: Number(term) }] : [];
+              run("decision", { version: item.version, action, reason_codes: reasons, comment: comment || null, offers })
+                .then(() => setNote(reasons.map(reasonText).join(" ")))
+                .catch(() => undefined);
+            }}>Сохранить решение</Button>
+            <Button kind="danger" disabled={pending} onClick={() => {
+              if (!reasons.length) {
+                setError("Укажите причину отказа");
+                return;
+              }
+              if (!window.confirm("Отказать по этой заявке?")) return;
+              run("decision", { version: item.version, action: "REJECT", reason_codes: reasons, comment: comment || null, offers: [] })
+                .then(() => setNote("Заявка отклонена"))
+                .catch(() => undefined);
+            }}>Отказать</Button>
+          </div>
         </Card>
       )}
       {error && <Alert>{error}</Alert>}

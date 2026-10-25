@@ -4,7 +4,7 @@
 -- Отрасль необязательна в БД; требование в форме/API нужно менять отдельно.
 -- Импорт и правила принятия кредитных решений здесь не реализуются.
 BEGIN;
-ALTER TABLE alfa.users ADD COLUMN phone text CHECK(phone ~ '^\+[1-9][0-9]{7,14}$');
+ALTER TABLE alfa.users ADD COLUMN IF NOT EXISTS phone text CHECK(phone ~ '^\+[1-9][0-9]{7,14}$');
 -- Старые учётки сохраняются с NULL; для новой регистрации телефон обязателен в API.
 ALTER TABLE alfa.companies ALTER COLUMN industry DROP NOT NULL;
 ALTER TABLE alfa.companies ALTER COLUMN industry SET DEFAULT 'UNKNOWN';

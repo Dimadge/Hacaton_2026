@@ -25,6 +25,8 @@ export type Company = {
   inn: string;
   industry: string;
   registered_at: string;
+  director_name?: string | null;
+  phone?: string | null;
 };
 
 export type Financials = {
@@ -99,6 +101,19 @@ export type Explanation = {
   decision_type: string;
   explanation: string;
   offers_available: number;
+};
+
+export type Collateral = {
+  id: string;
+  collateral_type: string;
+  description: string;
+  owner_name: string;
+  ownership_type: string;
+  declared_value: Money;
+  assessed_value: Money | null;
+  has_encumbrance: boolean | null;
+  status: string;
+  review_comment: string | null;
 };
 
 export type Fulfillment = {

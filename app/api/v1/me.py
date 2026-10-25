@@ -10,8 +10,11 @@ router = APIRouter(prefix='/me', tags=['Профиль компании'])
 
 @router.get('/company', response_model=CompanyOut)
 def my_company(actor: Actor = Depends(require_client), conn: Connection = Depends(get_connection)):
-    row = conn.execute(text("""SELECT id,name,inn,industry,registered_at
-                              FROM alfa.companies WHERE id=:id"""), {'id': actor.company_id}).mappings().first()
+    row = conn.execute(text("""SELECT c.id, c.name, c.inn, c.industry, c.registered_at,
+                                      c.director_name, u.phone
+                               FROM alfa.companies c
+                               JOIN alfa.users u ON u.company_id = c.id AND u.id = :user
+                               WHERE c.id = :id"""), {'id': actor.company_id, 'user': actor.id}).mappings().first()
     if row is None:
         raise ApiProblem(404, 'NOT_FOUND', 'Компания не найдена')
     return {**row, 'registered_at': row['registered_at'].isoformat()}

@@ -10,7 +10,6 @@ from ...database import get_connection
 from ...schemas.auth import LoginRequest, LoginResponse, RegisterRequest
 
 router = APIRouter(prefix='/auth', tags=['Авторизация'])
-INDUSTRIES = {'MANUFACTURING', 'TRADE', 'FOOD', 'SERVICES'}
 
 
 def _email_message(value: str) -> str | None:
@@ -30,6 +29,38 @@ def _email_message(value: str) -> str | None:
     return None
 
 
+def _phone(value: str) -> str:
+    digits = re.sub(r'\D', '', value)
+    if len(digits) == 11 and digits[0] in '78':
+        digits = '7' + digits[1:]
+    elif len(digits) == 10:
+        digits = '7' + digits
+    if not re.fullmatch(r'7\d{10}', digits):
+        raise ApiProblem(422, 'VALIDATION_ERROR', 'Укажите телефон: 10 цифр или номер с +7')
+    return f'+{digits}'
+
+
+def _password_message(value: str) -> str | None:
+    if len(value) < 12:
+        return 'Пароль должен содержать минимум 12 символов'
+    if not re.search(r'[A-ZА-ЯЁ]', value) or not re.search(r'[a-zа-яё]', value):
+        return 'В пароле нужны заглавная и строчная буквы'
+    if not re.search(r'\d', value):
+        return 'В пароле нужна цифра'
+    if not re.search(r'[^A-Za-zА-Яа-яЁё0-9]', value):
+        return 'В пароле нужен спецсимвол, например ! или @'
+    return None
+
+
+def _director_name(value: str) -> str:
+    name = re.sub(r'\s+', ' ', value.strip())
+    parts = name.split(' ')
+    word = r"[A-Za-zА-Яа-яЁё]{2,}(?:-[A-Za-zА-Яа-яЁё]{2,})*"
+    if len(parts) != 3 or any(not re.fullmatch(word, part) for part in parts) or len(name) > 200:
+        raise ApiProblem(422, 'VALIDATION_ERROR', 'Укажите фамилию, имя и отчество: ровно три слова')
+    return name
+
+
 def _issue_token(conn: Connection, email: str) -> LoginResponse:
     user = conn.execute(text("""SELECT id,role,company_id FROM alfa.users
                                 WHERE email=:email AND active=true"""), {'email': email}).mappings().first()
@@ -43,28 +74,30 @@ def register(data: RegisterRequest, conn: Connection = Depends(get_connection)):
     if message:
         raise ApiProblem(422, 'VALIDATION_ERROR', message)
     email = data.email.strip().lower()
-    if len(data.password) < 12:
-        raise ApiProblem(422, 'VALIDATION_ERROR', 'Пароль должен содержать минимум 12 символов')
+    password_message = _password_message(data.password)
+    if password_message:
+        raise ApiProblem(422, 'VALIDATION_ERROR', password_message)
     name = data.company_name.strip()
     if not name:
         raise ApiProblem(422, 'VALIDATION_ERROR', 'Укажите название компании')
     inn = data.inn.strip()
     if not re.fullmatch(r'\d{10}|\d{12}', inn):
         raise ApiProblem(422, 'VALIDATION_ERROR', 'ИНН должен содержать 10 или 12 цифр')
-    if data.industry not in INDUSTRIES:
-        raise ApiProblem(422, 'VALIDATION_ERROR', 'Выберите отрасль')
+    phone = _phone(data.phone)
+    director_name = _director_name(data.director_name)
     if conn.execute(text('SELECT 1 FROM alfa.users WHERE email=:email'), {'email': email}).first():
         raise ApiProblem(409, 'EMAIL_TAKEN', 'Кабинет с такой почтой уже есть')
     if conn.execute(text('SELECT 1 FROM alfa.companies WHERE inn=:inn'), {'inn': inn}).first():
         raise ApiProblem(409, 'INN_TAKEN', 'Компания с таким ИНН уже есть')
     try:
-        company_id = conn.execute(text("""INSERT INTO alfa.companies(name,inn,industry,registered_at)
-            VALUES(:name,:inn,:industry,:registered_at) RETURNING id"""), {
-            'name': name, 'inn': inn, 'industry': data.industry, 'registered_at': date.today(),
+        company_id = conn.execute(text("""INSERT INTO alfa.companies(name,inn,industry,registered_at,director_name)
+            VALUES(:name,:inn,'UNKNOWN',:registered_at,:director_name) RETURNING id"""), {
+            'name': name, 'inn': inn, 'registered_at': date.today(), 'director_name': director_name,
         }).scalar_one()
-        conn.execute(text("""INSERT INTO alfa.users(email,password_hash,role,company_id)
-            VALUES(:email,:password_hash,'CLIENT',:company)"""), {
-            'email': email, 'password_hash': PasswordHasher().hash(data.password), 'company': company_id,
+        conn.execute(text("""INSERT INTO alfa.users(email,password_hash,role,company_id,phone)
+            VALUES(:email,:password_hash,'CLIENT',:company,:phone)"""), {
+            'email': email, 'password_hash': PasswordHasher().hash(data.password),
+            'company': company_id, 'phone': phone,
         })
     except IntegrityError:
         raise ApiProblem(409, 'EMAIL_TAKEN', 'Кабинет с такой почтой уже есть') from None

@@ -10,7 +10,7 @@ CREATE TABLE alfa.application_collateral (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     application_id uuid NOT NULL REFERENCES alfa.loan_applications(id),
     collateral_type text NOT NULL CHECK (collateral_type IN
-        ('REAL_ESTATE', 'VEHICLE', 'EQUIPMENT', 'INVENTORY', 'OTHER')),
+        ('LAND', 'REAL_ESTATE', 'VEHICLE', 'EQUIPMENT', 'INVENTORY', 'OTHER')),
     description text NOT NULL CHECK (length(btrim(description)) BETWEEN 1 AND 4000),
     owner_name text NOT NULL CHECK (length(btrim(owner_name)) BETWEEN 1 AND 500),
     ownership_type text NOT NULL CHECK (ownership_type IN ('BORROWER', 'THIRD_PARTY')),

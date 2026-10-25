@@ -8,6 +8,8 @@ from ...schemas.decision import (BankQueueItem, BankApplicationOut,
                                  BankDecisionIn, EvaluateOut)
 from ...services import decisions
 from ...services.scoring_adapter import execute_and_save_scoring
+from ...schemas.collateral import CollateralOut
+from ...services import collateral as collateral_service
 from decimal import Decimal
 from ...scoring.explain import calculate_score_breakdown, generate_bank_underwriter_summary
 from sqlalchemy import Connection, text
@@ -29,6 +31,14 @@ def application(application_id: UUID,
                 _actor: Actor = Depends(require_bank_employee),
                 conn: Connection = Depends(get_connection)):
     return decisions.bank_application(conn, application_id)
+
+
+@router.get('/applications/{application_id}/collateral', response_model=list[CollateralOut],
+            summary='Залог по заявке для сотрудника')
+def application_collateral(application_id: UUID,
+                           _actor: Actor = Depends(require_bank_employee),
+                           conn: Connection = Depends(get_connection)):
+    return collateral_service.list_for_bank(conn, application_id)
 
 
 @router.post('/applications/{application_id}/evaluate', response_model=EvaluateOut,

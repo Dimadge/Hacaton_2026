@@ -12,6 +12,8 @@ from ...schemas.checks import ChecksOut
 from ...schemas.decision import OffersOut
 from ...services import decisions, fulfillment
 from ...schemas.fulfillment import AcceptOfferIn, VersionedAction, FulfillmentOut
+from ...schemas.collateral import CollateralIn, CollateralOut
+from ...services import collateral as collateral_service
 from ...scoring.explain import generate_explanation
 
 router = APIRouter(prefix='/applications', tags=['Заявки'])
@@ -39,6 +41,21 @@ def patch_application(application_id: UUID, data: ApplicationPatch,
                       actor: Actor = Depends(require_client),
                       conn: Connection = Depends(get_connection)):
     return service.update_one(conn, actor, application_id, data)
+
+
+@router.get('/{application_id}/collateral', response_model=list[CollateralOut],
+            summary='Предметы залога заявки')
+def list_collateral(application_id: UUID, actor: Actor = Depends(require_client),
+                    conn: Connection = Depends(get_connection)):
+    return collateral_service.list_for_client(conn, actor, application_id)
+
+
+@router.post('/{application_id}/collateral', status_code=status.HTTP_201_CREATED,
+             response_model=CollateralOut, summary='Добавить земельный участок, недвижимость или транспорт')
+def add_collateral(application_id: UUID, data: CollateralIn,
+                   actor: Actor = Depends(require_client),
+                   conn: Connection = Depends(get_connection)):
+    return collateral_service.add_for_client(conn, actor, application_id, data)
 
 
 @router.get('/{application_id}/events', response_model=list[EventOut])

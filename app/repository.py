@@ -15,18 +15,18 @@ def actor_company(conn, actor_id):
     conn.execute(text("SELECT set_config('app.actor_id', :actor, true)"), {'actor':str(actor_id)})
     return company
 
-def register_new_company(conn, *, email, password, name, inn, industry, registered_at):
+def register_new_company(conn, *, email, password, name, inn, registered_at, industry='UNKNOWN', phone=None, director_name=None):
     # По известному ИНН не присоединяем пользователя: требуется подтверждение доступа.
     if conn.scalar(text('SELECT id FROM alfa.companies WHERE inn=:inn'), {'inn':inn}):
         raise ValueError('Компания уже есть: требуется приглашение/подтверждение доступа')
     if len(password) < 12:
         raise ValueError('Пароль должен содержать минимум 12 символов')
-    company = conn.scalar(text("""INSERT INTO alfa.companies(name,inn,industry,registered_at)
-        VALUES(:name,:inn,:industry,:date) RETURNING id"""),
-        {'name':name,'inn':inn,'industry':industry,'date':registered_at})
-    user = conn.scalar(text("""INSERT INTO alfa.users(email,password_hash,role,company_id)
-        VALUES(:email,:hash,'CLIENT',:company) RETURNING id"""),
-        {'email':email.strip().lower(),'hash':PasswordHasher().hash(password),'company':company})
+    company = conn.scalar(text("""INSERT INTO alfa.companies(name,inn,industry,registered_at,director_name)
+        VALUES(:name,:inn,:industry,:date,:director_name) RETURNING id"""),
+        {'name':name,'inn':inn,'industry':industry,'date':registered_at,'director_name':director_name})
+    user = conn.scalar(text("""INSERT INTO alfa.users(email,password_hash,role,company_id,phone)
+        VALUES(:email,:hash,'CLIENT',:company,:phone) RETURNING id"""),
+        {'email':email.strip().lower(),'hash':PasswordHasher().hash(password),'company':company,'phone':phone})
     return user, company
 
 def create_draft(conn, *, actor_id, product_code, amount, term, purpose,

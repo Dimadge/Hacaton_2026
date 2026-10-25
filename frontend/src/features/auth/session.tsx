@@ -8,7 +8,7 @@ const KEY = "alfa-navigator-session";
 const AuthContext = createContext<{
   session: Session | null;
   login: (email: string, password: string) => Promise<Role>;
-  register: (body: { email: string; password: string; company_name: string; inn: string; industry: string }) => Promise<Role>;
+  register: (body: { email: string; password: string; company_name: string; inn: string; phone: string; director_name: string }) => Promise<Role>;
   logout: () => void;
 } | null>(null);
 
@@ -36,7 +36,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return store(await api<LoginResponse>("/auth/login", { body: { email, password } }));
   }
 
-  async function register(body: { email: string; password: string; company_name: string; inn: string; industry: string }) {
+  async function register(body: { email: string; password: string; company_name: string; inn: string; phone: string; director_name: string }) {
     return store(await api<LoginResponse>("/auth/register", { body }));
   }
 

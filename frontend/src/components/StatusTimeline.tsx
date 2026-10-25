@@ -14,7 +14,7 @@ export function StatusTimeline({ events }: { events: AppEvent[] }) {
             {STATUS_LABEL[event.to_status] ?? event.to_status}
           </p>
           <p className="text-xs text-neutral-500">
-            Версия {event.application_version} · {formatDate(event.at)}
+            Этап {event.application_version} · {formatDate(event.at)}
             {index === events.length - 1 ? " · текущий статус" : ""}
           </p>
         </li>

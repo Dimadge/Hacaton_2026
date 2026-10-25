@@ -13,7 +13,8 @@ class RegisterRequest(BaseModel):
     password: str
     company_name: str
     inn: str
-    industry: str
+    phone: str
+    director_name: str
 
 
 class LoginResponse(BaseModel):

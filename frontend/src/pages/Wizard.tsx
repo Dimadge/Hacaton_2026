@@ -3,14 +3,35 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import type { Application, Company, Product } from "../api/types";
+import type { Application, Collateral, Company, Product } from "../api/types";
+import { CollateralList } from "../components/CollateralList";
 import { Alert, Button, Card, Field, inputClass, Loader } from "../components/ui";
 import { buildDraftSchema, type DraftValues } from "../features/applications/form/schema";
 import { useAuth } from "../features/auth/session";
-import { formatMoney, formatRate, toMoney } from "../lib/format";
+import { formatMoney, formatPhone, formatRate, toMoney } from "../lib/format";
 import { newIdempotencyKey } from "../lib/id";
 
-const STEPS = ["Продукт", "Сумма и срок", "Компания", "Финансы", "Итог"];
+const STEPS = ["Продукт", "Сумма и срок", "Компания", "Финансы", "Залог", "Итог"];
+
+type CollateralDraft = {
+  collateral_type: "LAND" | "REAL_ESTATE" | "VEHICLE";
+  description: string;
+  owner_name: string;
+  ownership_type: "BORROWER" | "THIRD_PARTY";
+  declared_value: string;
+  has_encumbrance: "unknown" | "yes" | "no";
+};
+
+function emptyCollateral(): CollateralDraft {
+  return {
+    collateral_type: "REAL_ESTATE",
+    description: "",
+    owner_name: "",
+    ownership_type: "BORROWER",
+    declared_value: "",
+    has_encumbrance: "unknown",
+  };
+}
 
 export function WizardPage() {
   const { id } = useParams();
@@ -24,6 +45,8 @@ export function WizardPage() {
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [ready, setReady] = useState(false);
+  const [savedCollateral, setSavedCollateral] = useState<Collateral[]>([]);
+  const [collateral, setCollateral] = useState<CollateralDraft[]>([]);
 
   const form = useForm<DraftValues>({
     resolver: zodResolver(buildDraftSchema(products)),
@@ -49,9 +72,11 @@ export function WizardPage() {
       api<Product[]>("/products", { token }),
       api<Company>("/me/company", { token }),
       id ? api<Application>(`/applications/${id}`, { token }) : Promise.resolve(null),
-    ]).then(([nextProducts, nextCompany, application]) => {
+      id ? api<Collateral[]>(`/applications/${id}/collateral`, { token }) : Promise.resolve([]),
+    ]).then(([nextProducts, nextCompany, application, nextCollateral]) => {
       setProducts(nextProducts);
       setCompany(nextCompany);
+      setSavedCollateral(nextCollateral);
       if (application) {
         if (application.status !== "DRAFT" && application.status !== "NEED_INFO") {
           navigate(`/client/applications/${application.id}`);
@@ -104,8 +129,21 @@ export function WizardPage() {
     return "";
   }
 
+  function collateralError() {
+    for (const item of collateral) {
+      if (!item.description.trim()) return "Опишите предмет залога";
+      if (!item.owner_name.trim()) return "Укажите собственника";
+      if (!/^\d+([.,]\d{1,2})?$/.test(item.declared_value.trim())) return "Укажите стоимость залога";
+    }
+    return "";
+  }
+
+  function updateCollateral(index: number, patch: Partial<CollateralDraft>) {
+    setCollateral((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  }
+
   async function save(data: DraftValues, send: boolean) {
-    const limit = matchesProduct(data);
+    const limit = matchesProduct(data) || collateralError();
     if (limit) return setError(limit);
     setPending(true);
     setError("");
@@ -115,6 +153,20 @@ export function WizardPage() {
       const saved = id
         ? await api<Application>(`/applications/${id}`, { method: "PATCH", token, body: { version, ...body } })
         : await api<Application>("/applications", { method: "POST", token, body: { product_code: data.product_code, ...body } });
+      for (const item of collateral) {
+        await api(`/applications/${saved.id}/collateral`, {
+          method: "POST",
+          token,
+          body: {
+            collateral_type: item.collateral_type,
+            description: item.description.trim(),
+            owner_name: item.owner_name.trim(),
+            ownership_type: item.ownership_type,
+            declared_value: toMoney(item.declared_value),
+            has_encumbrance: item.has_encumbrance === "unknown" ? null : item.has_encumbrance === "yes",
+          },
+        });
+      }
       if (send) {
         await api(`/applications/${saved.id}/submit`, {
           token,
@@ -136,7 +188,7 @@ export function WizardPage() {
 
   return (
     <Card title="Анкета">
-      <p className="mb-3 text-sm text-neutral-500">Шаг {step + 1} из 5 · {STEPS[step]}</p>
+      <p className="mb-3 text-sm text-neutral-500">Шаг {step + 1} из {STEPS.length} · {STEPS[step]}</p>
       <ol className="mb-6 flex gap-2">
         {STEPS.map((label, index) => (
           <li key={label} className="flex-1">
@@ -174,7 +226,8 @@ export function WizardPage() {
           <div className="text-sm">
             <p>{company.name}</p>
             <p>ИНН {company.inn}</p>
-            <p>Отрасль {company.industry}</p>
+            <p>Руководитель: {company.director_name || "не указан"}</p>
+            <p>Телефон: {company.phone ? formatPhone(company.phone) : "не указан"}</p>
           </div>
         )}
         {step === 3 && (
@@ -201,11 +254,65 @@ export function WizardPage() {
           </>
         )}
         {step === 4 && (
+          <div className="space-y-4">
+            <p className="text-sm text-neutral-600">В залог можно передать земельный участок, недвижимость или транспорт. Это необязательно.</p>
+            {savedCollateral.length > 0 && <CollateralList items={savedCollateral} />}
+            {collateral.map((item, index) => (
+              <div key={index} className="space-y-3 rounded-xl border border-black/5 p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold">Объект {index + 1}</p>
+                  <button
+                    type="button"
+                    className="grid h-8 w-8 cursor-pointer place-items-center rounded-lg text-neutral-500 hover:bg-neutral-100 hover:text-[#ef3124]"
+                    aria-label="Убрать объект"
+                    onClick={() => setCollateral((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                      <path d="M6 6l12 12M18 6L6 18" />
+                    </svg>
+                  </button>
+                </div>
+                <Field label="Объект">
+                  <select className={inputClass} value={item.collateral_type} onChange={(event) => updateCollateral(index, { collateral_type: event.target.value as CollateralDraft["collateral_type"] })}>
+                    <option value="LAND">Земельный участок</option>
+                    <option value="REAL_ESTATE">Недвижимость</option>
+                    <option value="VEHICLE">Транспорт</option>
+                  </select>
+                </Field>
+                <Field label="Описание">
+                  <textarea className={inputClass} value={item.description} onChange={(event) => updateCollateral(index, { description: event.target.value })} />
+                </Field>
+                <Field label="Собственник">
+                  <input className={inputClass} value={item.owner_name} onChange={(event) => updateCollateral(index, { owner_name: event.target.value })} />
+                </Field>
+                <Field label="Кому принадлежит">
+                  <select className={inputClass} value={item.ownership_type} onChange={(event) => updateCollateral(index, { ownership_type: event.target.value as CollateralDraft["ownership_type"] })}>
+                    <option value="BORROWER">Заёмщику</option>
+                    <option value="THIRD_PARTY">Третьему лицу</option>
+                  </select>
+                </Field>
+                <Field label="Заявленная стоимость, ₽">
+                  <input className={inputClass} value={item.declared_value} onChange={(event) => updateCollateral(index, { declared_value: event.target.value })} />
+                </Field>
+                <Field label="Обременение">
+                  <select className={inputClass} value={item.has_encumbrance} onChange={(event) => updateCollateral(index, { has_encumbrance: event.target.value as CollateralDraft["has_encumbrance"] })}>
+                    <option value="unknown">Не указано</option>
+                    <option value="no">Нет</option>
+                    <option value="yes">Есть</option>
+                  </select>
+                </Field>
+              </div>
+            ))}
+            <Button type="button" kind="ghost" onClick={() => setCollateral((current) => [...current, emptyCollateral()])}>Добавить объект</Button>
+          </div>
+        )}
+        {step === 5 && (
           <ul className="space-y-1 text-sm">
             <li>Продукт: {product?.name}</li>
             <li>Цель: {values.purpose}</li>
             <li>Сумма: {values.requested_amount} на {values.term_months} мес.</li>
             <li>Выручка: {values.monthly_revenue}</li>
+            <li>Залог: {savedCollateral.length + collateral.length ? `${savedCollateral.length + collateral.length} объект(ов)` : "не указан"}</li>
           </ul>
         )}
         {error && <Alert>{error}</Alert>}
@@ -217,8 +324,17 @@ export function WizardPage() {
               setStep((current) => current - 1);
             }}>Назад</Button>
           )}
-          {step < 4 && (
+          {step < 5 && (
             <Button type="button" onClick={async () => {
+              if (step === 4) {
+                const message = collateralError();
+                if (message) setError(message);
+                else {
+                  setError("");
+                  setStep(5);
+                }
+                return;
+              }
               const fields = [
                 ["product_code", "purpose"],
                 ["requested_amount", "term_months"],
@@ -228,8 +344,8 @@ export function WizardPage() {
               if (fields.length === 0 || await form.trigger(fields)) setStep(step + 1);
             }}>Дальше</Button>
           )}
-          {step === 4 && <Button disabled={pending}>Сохранить черновик</Button>}
-          {step === 4 && !id && <Button type="button" kind="ghost" disabled={pending} onClick={form.handleSubmit((data) => save(data, true))}>Отправить</Button>}
+          {step === 5 && <Button disabled={pending}>Сохранить черновик</Button>}
+          {step === 5 && !id && <Button type="button" kind="ghost" disabled={pending} onClick={form.handleSubmit((data) => save(data, true))}>Отправить</Button>}
         </div>
       </form>
     </Card>

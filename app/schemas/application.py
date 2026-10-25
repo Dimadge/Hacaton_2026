@@ -94,6 +94,8 @@ class CompanyOut(BaseModel):
     inn: str
     industry: str
     registered_at: str
+    director_name: str | None = None
+    phone: str | None = None
 
 
 class ApplicationOut(BaseModel):

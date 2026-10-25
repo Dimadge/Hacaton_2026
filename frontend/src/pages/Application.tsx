@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError } from "../api/client";
-import type { Application, AppEvent, Checks, Explanation, Fulfillment, Offers } from "../api/types";
+import type { Application, AppEvent, Checks, Collateral, Explanation, Fulfillment, Offers } from "../api/types";
+import { CollateralList } from "../components/CollateralList";
 import { OfferComparison } from "../components/OfferComparison";
 import { StatusTimeline } from "../components/StatusTimeline";
 import { Alert, Button, Card, ErrorState, Field, inputClass, Loader, Notice, StatusBadge } from "../components/ui";
 import { useAuth } from "../features/auth/session";
-import { productName, reasonText } from "../lib/format";
+import { formatMoney, productName, reasonText } from "../lib/format";
 import { newIdempotencyKey } from "../lib/id";
 
 export function ApplicationPage() {
@@ -18,6 +19,7 @@ export function ApplicationPage() {
   const [events, setEvents] = useState<AppEvent[]>([]);
   const [checks, setChecks] = useState<Checks | null>(null);
   const [offers, setOffers] = useState<Offers | null>(null);
+  const [collateral, setCollateral] = useState<Collateral[]>([]);
   const [explanation, setExplanation] = useState("");
   const [clarification, setClarification] = useState("");
   const [error, setError] = useState("");
@@ -32,11 +34,13 @@ export function ApplicationPage() {
       api<AppEvent[]>(`/applications/${id}/events`, { token }),
       api<Checks>(`/applications/${id}/checks`, { token }),
       api<Offers>(`/applications/${id}/offers`, { token }),
-    ]).then(async ([nextApplication, nextEvents, nextChecks, nextOffers]) => {
+      api<Collateral[]>(`/applications/${id}/collateral`, { token }),
+    ]).then(async ([nextApplication, nextEvents, nextChecks, nextOffers, nextCollateral]) => {
       setApplication(nextApplication);
       setEvents(nextEvents);
       setChecks(nextChecks);
       setOffers(nextOffers);
+      setCollateral(nextCollateral);
       api<Explanation>(`/applications/${id}/explanation`, { token })
         .then((text) => setExplanation(text.explanation))
         .catch(() => setExplanation(""));
@@ -80,17 +84,24 @@ export function ApplicationPage() {
     }
   }
 
-  if (error && !application) return <ErrorState message={error} onRetry={load} />;
-  if (!application || !offers || !checks) return <Loader />;
+  const back = (
+    <Link className="inline-flex items-center gap-1 text-sm font-semibold hover:text-[#ef3124]" to="/client">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+      В кабинет
+    </Link>
+  );
+
+  if (error && !application) return <div className="space-y-4">{back}<ErrorState message={error} onRetry={load} /></div>;
+  if (!application || !offers || !checks) return <div className="space-y-4">{back}<Loader /></div>;
 
   const editable = application.status === "DRAFT" || application.status === "NEED_INFO";
 
   return (
     <div className="space-y-4">
+      {back}
       <Card title="Заявка">
         <div className="mb-2 flex items-center gap-2">
           <StatusBadge status={application.status} />
-          <span className="text-sm text-neutral-500">версия {application.version}</span>
         </div>
         <p className="text-lg font-semibold tracking-tight">{productName(application.product_code)}</p>
         <p className="text-sm text-neutral-600">{application.purpose}</p>
@@ -121,6 +132,8 @@ export function ApplicationPage() {
         {checks.reason_codes.map((code) => <p key={code} className="text-sm">{reasonText(code)}</p>)}
       </Card>
 
+      <Card title="Залог"><CollateralList items={collateral} /></Card>
+
       <Card title="История"><StatusTimeline events={events} /></Card>
 
       <Card title="Предложения">
@@ -132,7 +145,14 @@ export function ApplicationPage() {
           }} />
         )}
         {offers.reason_codes.map((code) => <p key={code} className="mt-2 text-sm">{reasonText(code)}</p>)}
-        {explanation && <p className="mt-3 whitespace-pre-wrap text-sm">{explanation}</p>}
+        {offers.decision_type === "MANUAL_REVIEW" || application.status === "UNDER_REVIEW" ? (
+          <div className="mt-3 space-y-3 text-sm">
+            <p>Ваша заявка на сумму {formatMoney(application.requested_amount)} и срок {application.term_months} мес. передана на индивидуальное рассмотрение кредитному эксперту Альфа-Банка.</p>
+            <p>Специалист проверяет информацию о компании и при необходимости может запросить дополнительные документы или уточнения.</p>
+            <p>После завершения рассмотрения здесь появится решение банка. Если кредитование возможно, мы покажем доступные предложения с суммой, сроком и ежемесячным платежом.</p>
+            <p>Статус заявки можно отслеживать в разделе «История».</p>
+          </div>
+        ) : explanation && <p className="mt-3 whitespace-pre-wrap text-sm">{explanation}</p>}
         {application.status === "OFFERED" && <Button className="mt-3" kind="danger" disabled={pending} onClick={() => act("cancel", { version: application.version })}>Отказаться</Button>}
         {application.status === "ACCEPTED" && <Button className="mt-3" disabled={pending} onClick={() => act("sign", { version: application.version })}>Подписать договор</Button>}
         {application.status === "SIGNED" && <Button className="mt-3" disabled={pending} onClick={() => act("disburse", { version: application.version })}>Получить средства</Button>}
