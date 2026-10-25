@@ -63,8 +63,11 @@ def run_scoring(application_id: UUID, actor: Actor = Depends(require_bank_employ
 
 @router.get('/applications/{application_id}/scoring-analysis',
             summary='Пофакторная расшифровка скоринга и заключение для андеррайтера')
-async def get_scoring_analysis(application_id: UUID,
-                               conn: Connection = Depends(get_connection)):
+async def get_scoring_analysis(
+    application_id: UUID,
+    _actor: Actor = Depends(require_bank_employee),
+    conn: Connection = Depends(get_connection),
+):
     run = conn.execute(
         text("""SELECT r.id, r.input_snapshot, s.id as scoring_id, s.score, s.risk
                 FROM alfa.evaluation_runs r
@@ -103,8 +106,8 @@ async def get_scoring_analysis(application_id: UUID,
         expenses=Decimal(str(snapshot["operating_expenses"])),
         existing_debt=Decimal(str(snapshot["existing_debt_payments"])),
         business_age_months=int(snapshot["business_age_months"]),
-        credit_history_flag=check_values.get("BKI", "good"),
-        company_registry_flag=check_values.get("FNS", "active"),
+        credit_history_flag=check_values.get("BKI", "unknown"),
+        company_registry_flag=check_values.get("FNS", "unknown"),
     )
 
     decision_type = decision["decision_type"] if decision else "MANUAL_REVIEW"
