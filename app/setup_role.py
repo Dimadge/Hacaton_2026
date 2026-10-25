@@ -27,6 +27,8 @@ def main():
             sql.SQL('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA alfa TO {}').format(sql.Identifier(name)),
             sql.SQL('GRANT INSERT ON alfa.companies, alfa.users, alfa.loan_applications, alfa.financial_profiles, alfa.application_documents, alfa.mock_profiles, alfa.evaluation_runs, alfa.verifications, alfa.scoring_results, alfa.scoring_result_reasons, alfa.credit_decisions, alfa.decision_reasons, alfa.credit_offers, alfa.application_events, alfa.idempotency_keys, alfa.monthly_financials TO {}').format(sql.Identifier(name)),
             sql.SQL('GRANT UPDATE ON alfa.loan_applications, alfa.users, alfa.mock_profiles, alfa.idempotency_keys TO {}').format(sql.Identifier(name)),
+            sql.SQL('GRANT SELECT, INSERT, UPDATE ON alfa.application_collateral TO {}').format(sql.Identifier(name)),
+            sql.SQL('GRANT INSERT, UPDATE ON alfa.signing_codes TO {}').format(sql.Identifier(name)),
         ]:
             c.execute(query)
     print('SQL-роль настроена. Пароль существующей роли не менялся.')

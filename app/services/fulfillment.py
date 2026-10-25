@@ -1,3 +1,8 @@
+import hashlib
+import hmac
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
 """BE-08: приём оффера, имитация подписи и выдачи.
 
 Атомарно меняется одна строка заявки; audit-триггер БД создаёт событие.
@@ -72,9 +77,89 @@ def accept_offer(conn: Connection, actor: Actor, app_id: UUID, version: int,
     return _update(conn, actor, app_id, version, 'OFFERED', 'ACCEPTED', offer_id)
 
 
-def sign_application(conn: Connection, actor: Actor, app_id: UUID, version: int) -> dict:
-    _lock(conn, actor, app_id, version, 'ACCEPTED')
-    return _update(conn, actor, app_id, version, 'ACCEPTED', 'SIGNED')
+def _sign_code_digest(application_id: UUID, salt: str, code: str) -> str:
+    # HMAC with server secret means leaked DB hash cannot be brute-forced alone.
+    key = os.environ["JWT_SECRET"].encode("utf-8")
+    message = f"contract-sign:{application_id}:{salt}:{code}".encode("utf-8")
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def request_signing_code(
+    conn: Connection, actor: Actor, app_id: UUID, version: int,
+) -> dict:
+    if os.getenv("DEMO_SIGNING_CODE_VISIBLE", "false").lower() != "true":
+        raise ApiProblem(
+            503, "DEMO_CODE_DISABLED", "Демонстрационная выдача кода отключена"
+        )
+
+    _lock(conn, actor, app_id, version, "ACCEPTED")
+    now = datetime.now(timezone.utc)
+    old = conn.execute(text("""
+        SELECT requested_at FROM alfa.signing_codes
+        WHERE application_id = :app FOR UPDATE
+    """), {"app": app_id}).mappings().first()
+    if old and (now - old["requested_at"]).total_seconds() < 30:
+        raise ApiProblem(429, "SIGN_CODE_RATE_LIMIT", "Повторите запрос через 30 секунд")
+
+    code = f"{secrets.randbelow(1000000):06d}"
+    salt = secrets.token_hex(16)
+    digest = _sign_code_digest(app_id, salt, code)
+    conn.execute(text("""
+        INSERT INTO alfa.signing_codes (
+            application_id, code_hash, salt,
+            expires_at, requested_at, attempts, used_at
+        ) VALUES (:app, :digest, :salt, :expires, :requested, 0, NULL)
+        ON CONFLICT (application_id) DO UPDATE SET
+            code_hash = EXCLUDED.code_hash,
+            salt = EXCLUDED.salt,
+            expires_at = EXCLUDED.expires_at,
+            requested_at = EXCLUDED.requested_at,
+            attempts = 0,
+            used_at = NULL
+    """), {
+        "app": app_id, "digest": digest, "salt": salt,
+        "expires": now + timedelta(minutes=5), "requested": now,
+    })
+    # Synthetic on-screen code ONLY in explicitly enabled local demo mode.
+    return {"expires_in_seconds": 300, "demo_code": code}
+
+
+def sign_application(
+    conn: Connection, actor: Actor, app_id: UUID, version: int, code: str,
+) -> dict:
+    _lock(conn, actor, app_id, version, "ACCEPTED")
+    otp = conn.execute(text("""
+        SELECT code_hash, salt, expires_at, attempts, used_at
+        FROM alfa.signing_codes
+        WHERE application_id = :app FOR UPDATE
+    """), {"app": app_id}).mappings().first()
+
+    if otp is None:
+        raise ApiProblem(409, "SIGN_CODE_REQUIRED", "Сначала запросите код")
+    if otp["used_at"] is not None:
+        raise ApiProblem(409, "SIGN_CODE_USED", "Код уже использован")
+    if datetime.now(timezone.utc) >= otp["expires_at"]:
+        raise ApiProblem(409, "SIGN_CODE_EXPIRED", "Срок действия кода истёк")
+    if otp["attempts"] >= 5:
+        raise ApiProblem(429, "SIGN_CODE_BLOCKED", "Попытки исчерпаны")
+
+    entered = _sign_code_digest(app_id, otp["salt"], code)
+    if not hmac.compare_digest(entered, otp["code_hash"]):
+        conn.execute(text("""
+            UPDATE alfa.signing_codes
+            SET attempts = attempts + 1
+            WHERE application_id = :app
+        """), {"app": app_id})
+        # Return sentinel so get_connection commits failed-attempt counter.
+        # Route below turns it into a 422 HTTP response.
+        return {"_bad_code": True}
+
+    conn.execute(text("""
+        UPDATE alfa.signing_codes
+        SET used_at = now()
+        WHERE application_id = :app
+    """), {"app": app_id})
+    return _update(conn, actor, app_id, version, "ACCEPTED", "SIGNED")
 
 
 def simulate_disbursement(conn: Connection, actor: Actor, app_id: UUID, version: int) -> dict:

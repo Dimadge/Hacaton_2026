@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 """BE-08 unit/route tests. PostgreSQL trigger behavior still needs real E2E."""
 from uuid import UUID, uuid4
 import pytest
@@ -7,7 +8,7 @@ from app.main import app
 from app.core.errors import ApiProblem
 from app.core.security import Actor, require_client, require_bank_employee
 from app.database import get_connection
-from app.schemas.fulfillment import AcceptOfferIn, VersionedAction
+from app.schemas.fulfillment import AcceptOfferIn, VersionedAction, SignWithCodeIn
 from app.services import fulfillment
 
 
@@ -28,6 +29,7 @@ class FakeDB:
         self.existing_offer=True
         self.offer_is_latest=True
         self.simulate_conflict=False
+        self.sign_codes = {}
     def execute(self, statement, params=None):
         sql = str(statement); params = params or {}
         if "set_config('app.actor_id'" in sql:
@@ -39,6 +41,21 @@ class FakeDB:
         if 'FROM alfa.credit_decisions d' in sql:
             return FakeResult({'id':self.decision_id if self.offer_is_latest else uuid4()}
                               if self.decisions_found else None)
+        if 'FROM alfa.signing_codes' in sql:
+            return FakeResult(self.sign_codes or None)
+        if 'INSERT INTO alfa.signing_codes' in sql:
+            self.sign_codes = {
+                'code_hash': params['digest'], 'salt': params['salt'],
+                'expires_at': params['expires'], 'requested_at': params['requested'],
+                'attempts': 0, 'used_at': None,
+            }
+            return FakeResult()
+        if 'UPDATE alfa.signing_codes' in sql:
+            if 'attempts = attempts + 1' in sql:
+                self.sign_codes['attempts'] += 1
+            if 'used_at = now()' in sql:
+                self.sign_codes['used_at'] = datetime.now(timezone.utc)
+            return FakeResult()
         if 'UPDATE alfa.loan_applications' in sql:
             assert params['app']==self.app_id and params['company']==self.company_id
             if self.simulate_conflict: return FakeResult(None)
@@ -65,7 +82,8 @@ def test_full_happy_flow(monkeypatch):
     accepted=fulfillment.accept_offer(db,db.actor,db.app_id,4,db.offer_id)
     assert accepted=={'id':db.app_id,'status':'ACCEPTED','version':5,
                       'accepted_offer_id':db.offer_id,'simulated':True}
-    signed=fulfillment.sign_application(db,db.actor,db.app_id,5)
+    otp=fulfillment.request_signing_code(db,db.actor,db.app_id,5)
+    signed=fulfillment.sign_application(db,db.actor,db.app_id,5,otp['demo_code'])
     assert signed['status']=='SIGNED' and signed['version']==6
     disbursed=fulfillment.simulate_disbursement(db,db.actor,db.app_id,6)
     assert disbursed['status']=='DISBURSED' and disbursed['version']==7
@@ -164,7 +182,10 @@ def test_fastapi_client_flow(monkeypatch):
                 'version':4,'offer_id':str(db.offer_id)})
             assert r.status_code==200,r.text
             assert r.json()['status']=='ACCEPTED'
-            r=http.post(f'/api/v1/applications/{db.app_id}/sign',json={'version':5})
+            code=http.post(f'/api/v1/applications/{db.app_id}/sign/code',json={'version':5})
+            assert code.status_code==200,code.text
+            r=http.post(f'/api/v1/applications/{db.app_id}/sign',json={
+                'version':5,'code':code.json()['demo_code']})
             assert r.status_code==200,r.text
             r=http.post(f'/api/v1/applications/{db.app_id}/disburse',json={'version':6})
             assert r.status_code==200,r.text
@@ -173,3 +194,36 @@ def test_fastapi_client_flow(monkeypatch):
             assert r.status_code==409,r.text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_invalid_signing_code(monkeypatch):
+    db=FakeDB(status='ACCEPTED',version=5); lock_fake(monkeypatch,db)
+    code=fulfillment.request_signing_code(db,db.actor,db.app_id,5)
+    wrong='000000' if code['demo_code']!='000000' else '111111'
+    response=fulfillment.sign_application(db,db.actor,db.app_id,5,wrong)
+    assert response == {'_bad_code': True}
+    assert db.sign_codes['attempts']==1
+    assert db.status=='ACCEPTED'
+
+
+def test_sign_requires_code():
+    with pytest.raises(ValidationError):
+        SignWithCodeIn(version=5)
+
+
+def test_sign_code_expires(monkeypatch):
+    db=FakeDB(status='ACCEPTED',version=5); lock_fake(monkeypatch,db)
+    code=fulfillment.request_signing_code(db,db.actor,db.app_id,5)
+    db.sign_codes['expires_at']=datetime.now(timezone.utc)-timedelta(seconds=1)
+    with pytest.raises(ApiProblem) as exc:
+        fulfillment.sign_application(db,db.actor,db.app_id,5,code['demo_code'])
+    assert exc.value.code=='SIGN_CODE_EXPIRED'
+
+
+def test_sign_code_attempt_limit(monkeypatch):
+    db=FakeDB(status='ACCEPTED',version=5); lock_fake(monkeypatch,db)
+    code=fulfillment.request_signing_code(db,db.actor,db.app_id,5)
+    db.sign_codes['attempts']=5
+    with pytest.raises(ApiProblem) as exc:
+        fulfillment.sign_application(db,db.actor,db.app_id,5,code['demo_code'])
+    assert exc.value.code=='SIGN_CODE_BLOCKED'

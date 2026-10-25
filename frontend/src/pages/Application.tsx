@@ -26,6 +26,51 @@ export function ApplicationPage() {
   const [notice, setNotice] = useState("");
   const [pending, setPending] = useState(false);
 
+  const [signCode, setSignCode] = useState("");
+  const [demoSignCode, setDemoSignCode] = useState("");
+
+  async function requestSignCode() {
+    if (!application) return;
+    setPending(true);
+    setError("");
+    try {
+      const result = await api<{ expires_in_seconds: number; demo_code: string }>(
+        `/applications/${id}/sign/code`, {
+          token: session!.token,
+          body: { version: application.version },
+        }
+      );
+      setDemoSignCode(result.demo_code);
+      setNotice("Демонстрационный код получен. Он действует 5 минут.");
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "Не удалось получить код");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function signWithCode() {
+    if (!application || !/^\d{6}$/.test(signCode)) return;
+    if (!window.confirm("Подтвердить демонстрационное подписание договора?")) return;
+    setPending(true);
+    setError("");
+    try {
+      const result = await api<Fulfillment>(`/applications/${id}/sign`, {
+        token: session!.token,
+        body: { version: application.version, code: signCode },
+      });
+      setApplication((old) => old ? { ...old, status: result.status, version: result.version } : old);
+      setSignCode("");
+      setDemoSignCode("");
+      setNotice("Демонстрационный договор подписан");
+      load().catch(() => undefined);
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "Подписание не выполнено");
+    } finally {
+      setPending(false);
+    }
+  }
+
   function load() {
     const token = session!.token;
     setError("");
@@ -154,7 +199,29 @@ export function ApplicationPage() {
           </div>
         ) : explanation && <p className="mt-3 whitespace-pre-wrap text-sm">{explanation}</p>}
         {application.status === "OFFERED" && <Button className="mt-3" kind="danger" disabled={pending} onClick={() => act("cancel", { version: application.version })}>Отказаться</Button>}
-        {application.status === "ACCEPTED" && <Button className="mt-3" disabled={pending} onClick={() => act("sign", { version: application.version })}>Подписать договор</Button>}
+        {application.status === "ACCEPTED" && (
+          <div className="mt-4 space-y-3 rounded-xl border border-black/10 p-4">
+            <p className="font-semibold">Подписание кредитного договора</p>
+            <p className="text-sm text-neutral-600">
+              Код действует 5 минут. Для MVP он отображается на экране клиента.
+            </p>
+            <Button disabled={pending} onClick={requestSignCode}>Получить код</Button>
+            {demoSignCode && (
+              <p className="rounded-lg bg-neutral-100 p-3 text-xl font-semibold tracking-widest">
+                Демонстрационный код: {demoSignCode}
+              </p>
+            )}
+            <Field label="Введите шестизначный код">
+              <input className={inputClass} inputMode="numeric" maxLength={6}
+                value={signCode}
+                onChange={(event) => setSignCode(event.target.value.replace(/\D/g, ""))}
+                placeholder="000000" />
+            </Field>
+            <Button disabled={pending || signCode.length !== 6} onClick={signWithCode}>
+              Подтвердить договор
+            </Button>
+          </div>
+        )}
         {application.status === "SIGNED" && <Button className="mt-3" disabled={pending} onClick={() => act("disburse", { version: application.version })}>Получить средства</Button>}
       </Card>
       {error && <Alert>{error}</Alert>}

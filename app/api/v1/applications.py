@@ -1,3 +1,4 @@
+from fastapi.responses import JSONResponse
 from uuid import UUID
 from fastapi import APIRouter, Depends, Header, status
 from sqlalchemy import Connection, text
@@ -11,7 +12,9 @@ from ...services import workflow, checks
 from ...schemas.checks import ChecksOut
 from ...schemas.decision import OffersOut
 from ...services import decisions, fulfillment
-from ...schemas.fulfillment import AcceptOfferIn, VersionedAction, FulfillmentOut
+from ...schemas.fulfillment import (
+    AcceptOfferIn, VersionedAction, FulfillmentOut, SignWithCodeIn, SignCodeOut,
+)
 from ...schemas.collateral import CollateralIn, CollateralOut
 from ...services import collateral as collateral_service
 from ...scoring.explain import generate_explanation
@@ -111,12 +114,26 @@ def accept(application_id: UUID, data: AcceptOfferIn,
     return fulfillment.accept_offer(conn, actor, application_id, data.version, data.offer_id)
 
 
+@router.post('/{application_id}/sign/code', response_model=SignCodeOut,
+             summary='Получить демонстрационный код для подтверждения договора')
+def request_sign_code(application_id: UUID, data: VersionedAction,
+                      actor: Actor = Depends(require_client),
+                      conn: Connection = Depends(get_connection)):
+    return fulfillment.request_signing_code(conn, actor, application_id, data.version)
+
+
 @router.post('/{application_id}/sign', response_model=FulfillmentOut,
-             summary='Симулировать подписание договора (только ACCEPTED)')
-def sign(application_id: UUID, data: VersionedAction,
+             summary='Подтвердить договор шестизначным кодом')
+def sign(application_id: UUID, data: SignWithCodeIn,
          actor: Actor = Depends(require_client),
          conn: Connection = Depends(get_connection)):
-    return fulfillment.sign_application(conn, actor, application_id, data.version)
+    result = fulfillment.sign_application(conn, actor, application_id, data.version, data.code)
+    if result.get('_bad_code'):
+        return JSONResponse(status_code=422, content={
+            'code': 'INVALID_SIGN_CODE', 'message': 'Неверный код подтверждения',
+            'details': {},
+        })
+    return result
 
 
 @router.post('/{application_id}/disburse', response_model=FulfillmentOut,

@@ -5,7 +5,7 @@ import type { BankApplication, Collateral, EvaluateResult, ScoreResult } from ".
 import { CollateralList } from "../components/CollateralList";
 import { Alert, Button, Card, ErrorState, Field, inputClass, Loader, StatusBadge } from "../components/ui";
 import { useAuth } from "../features/auth/session";
-import { REASONS, formatMoney, productName, reasonText } from "../lib/format";
+import { REASONS, formatMoney, productName, reasonText, toMoney } from "../lib/format";
 
 const HIDDEN_BANK_REASONS = new Set([
   "RISK_MEDIUM",
@@ -27,6 +27,56 @@ export function BankApplicationPage() {
   const [comment, setComment] = useState("");
   const [amount, setAmount] = useState("");
   const [term, setTerm] = useState("36");
+
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [reviewValue, setReviewValue] = useState("");
+  const [reviewComment, setReviewComment] = useState("");
+  const [reviewEncumbrance, setReviewEncumbrance] = useState(false);
+
+  async function saveCollateralReview(status: "ACCEPTED" | "REJECTED") {
+    if (!reviewingId) return;
+    if (!reviewComment.trim()) {
+      setError("Введите комментарий к оценке залога");
+      return;
+    }
+    let assessedValue: string | null = null;
+    if (status === "ACCEPTED") {
+      try {
+        assessedValue = toMoney(reviewValue);
+        if (Number(assessedValue) <= 0) throw new Error("Стоимость должна быть положительной");
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Неверная стоимость");
+        return;
+      }
+      if (reviewEncumbrance) {
+        setError("Залог с обременением нельзя принять по упрощённой процедуре");
+        return;
+      }
+    }
+    setPending(true);
+    setError("");
+    try {
+      await api<Collateral>(`/bank/applications/${id}/collateral/${reviewingId}`, {
+        method: "PATCH",
+        token: session!.token,
+        body: {
+          status,
+          assessed_value: assessedValue,
+          has_encumbrance: reviewEncumbrance,
+          review_comment: reviewComment.trim(),
+        },
+      });
+      setReviewingId(null);
+      setReviewValue("");
+      setReviewComment("");
+      setNote(status === "ACCEPTED" ? "Залог принят банком" : "Залог отклонён");
+      load();
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "Ошибка оценки залога");
+    } finally {
+      setPending(false);
+    }
+  }
 
   function load() {
     const token = session!.token;
@@ -101,7 +151,108 @@ export function BankApplicationPage() {
         {note && <p className="mt-2 text-sm">{note}</p>}
       </Card>
 
-      <Card title="Залог"><CollateralList items={collateral} /></Card>
+      <Card title="Кредитные ограничения">
+        <div className="grid gap-4 md:grid-cols-2">
+
+          <div className="rounded-xl bg-[#f7f7f8] p-4">
+            <p className="text-sm text-neutral-500">
+              Максимальный ежемесячный платёж (DS)
+            </p>
+
+            <p className="mt-2 text-xl font-semibold">
+              {item.max_new_payment !== null
+                ? formatMoney(item.max_new_payment)
+                : "Не рассчитан"}
+            </p>
+
+            <p className="mt-2 text-xs text-neutral-500">
+              Рассчитывается по финансовым данным
+              предприятия и действующим обязательствам.
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-[#f7f7f8] p-4">
+            <p className="text-sm text-neutral-500">
+              Максимальная сумма по залогу
+            </p>
+
+            <p className="mt-2 text-xl font-semibold">
+              {item.collateral_limit !== null
+                ? formatMoney(item.collateral_limit)
+                : ({
+                    NOT_DECLARED:
+                      "Залог не заявлен",
+                    COLLATERAL_PENDING:
+                      "Ожидается оценка банка",
+                    COLLATERAL_NOT_ACCEPTED:
+                      "Нет принятого залога",
+                    COLLATERAL_INVALID:
+                      "Требуется повторная проверка"
+                  }[item.collateral_status] ??
+                  "Не определена")}
+            </p>
+
+            <p className="mt-2 text-xs text-neutral-500">
+              Учебный коэффициент обеспечения — 70%.
+              Если залог не заявлен, лимит не применяется.
+            </p>
+          </div>
+        </div>
+
+        <p className="mt-4 text-sm text-neutral-600">
+          Для одобрения необходимо соблюдать лимит
+          ежемесячного платежа DS и лимит по залогу,
+          если последний применяется.
+        </p>
+      </Card>
+
+      <Card title="Залог">
+        <CollateralList items={collateral} />
+        {["CHECKING", "UNDER_REVIEW"].includes(item.status) && collateral
+          .filter((object) => ["DECLARED", "UNDER_REVIEW"].includes(object.status))
+          .map((object) => (
+            <div key={object.id} className="mt-4 rounded-xl border border-black/10 p-4">
+              <p className="font-semibold">{object.description}</p>
+              <p className="mt-2 text-sm">Клиент заявил: {formatMoney(object.declared_value)}</p>
+              {reviewingId !== object.id ? (
+                <Button className="mt-3" disabled={pending} onClick={() => {
+                  setReviewingId(object.id);
+                  setReviewValue(String(object.assessed_value ?? object.declared_value));
+                  setReviewEncumbrance(object.has_encumbrance ?? false);
+                  setReviewComment("");
+                }}>Оценить залог</Button>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  <Field label="Оценочная стоимость, ₽">
+                    <input className={inputClass} value={reviewValue}
+                      onChange={(event) => setReviewValue(event.target.value)} />
+                  </Field>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={reviewEncumbrance}
+                      onChange={(event) => setReviewEncumbrance(event.target.checked)} />
+                    Есть обременение
+                  </label>
+                  <Field label="Комментарий сотрудника">
+                    <textarea className={inputClass} value={reviewComment}
+                      onChange={(event) => setReviewComment(event.target.value)} />
+                  </Field>
+                  <div className="flex flex-wrap gap-2">
+                    <Button disabled={pending} onClick={() => saveCollateralReview("ACCEPTED")}>
+                      Принять залог
+                    </Button>
+                    <Button kind="danger" disabled={pending}
+                      onClick={() => saveCollateralReview("REJECTED")}>
+                      Отклонить залог
+                    </Button>
+                    <Button kind="ghost" disabled={pending} onClick={() => setReviewingId(null)}>
+                      Отмена
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+      </Card>
 
       {item.status === "UNDER_REVIEW" && (
         <Card title="Решение сотрудника">

@@ -19,6 +19,7 @@ from ..core.security import Actor
 from ..services.applications import _get_raw
 from .workflow import ensure_transition
 from .decision_policy import decide_preliminary
+from .collateral_limits import collateral_limit_for_offer
 
 
 MONEY_CENT = Decimal('0.01')
@@ -120,14 +121,61 @@ def bank_queue(conn: Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+
 def bank_application(conn: Connection, app_id: UUID) -> dict:
     app = _application_bank(conn, app_id)
     run = _latest_run(conn, app_id)
-    checks = _checks_for_run(conn, run['id']) if run else {}
-    return {**app, 'evaluation_run_id': run['id'] if run else None,
-            'verification_results': checks,
-            'scoring_ready': bool(run and _scoring_for_run(conn, run['id'])),
-            'client_clarification': run['input_snapshot'].get('client_clarification') if run else None}
+
+    checks = _checks_for_run(
+        conn, run["id"]
+    ) if run else {}
+
+    scoring = _scoring_for_run(
+        conn, run["id"]
+    ) if run else None
+
+    # Показываем лимит по залогу, не блокируя
+    # просмотр заявки с ещё не оценённым залогом.
+    collateral_status = "NOT_DECLARED"
+
+    try:
+        collateral_limit = collateral_limit_for_offer(
+            conn, app_id
+        )
+
+        if collateral_limit is not None:
+            collateral_status = "READY"
+
+    except ApiProblem as exc:
+        if exc.code not in {
+            "COLLATERAL_PENDING",
+            "COLLATERAL_NOT_ACCEPTED",
+            "COLLATERAL_INVALID",
+        }:
+            raise
+
+        collateral_limit = None
+        collateral_status = exc.code
+
+    return {
+        **app,
+        "evaluation_run_id": run["id"] if run else None,
+        "verification_results": checks,
+        "scoring_ready": scoring is not None,
+
+        "max_new_payment": (
+            scoring["max_new_payment"] if scoring else None
+        ),
+
+        "collateral_limit": collateral_limit,
+        "collateral_status": collateral_status,
+
+        "client_clarification": (
+            run["input_snapshot"].get("client_clarification")
+            if run else None
+        ),
+    }
+
 
 
 def _publish_scored_offers(conn: Connection, app: dict, run_id: UUID) -> dict:
@@ -135,12 +183,63 @@ def _publish_scored_offers(conn: Connection, app: dict, run_id: UUID) -> dict:
     from ..scoring import score_application
     from .scoring_adapter import build_scoring_input
 
-    out = score_application(build_scoring_input(conn, run_id))
-    if out.candidates and out.decision_hint in ('APPROVE', 'COUNTER_OFFER'):
+    
+    out = score_application(
+        build_scoring_input(conn, run_id)
+    )
+
+    candidates = list(out.candidates)
+
+    if candidates and out.decision_hint in (
+        "APPROVE", "COUNTER_OFFER"
+    ):
+        limit = collateral_limit_for_offer(
+            conn, app["id"]
+        )
+
+        if limit is not None:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.amount <= limit
+            ]
+
+            if not candidates:
+                _write_decision(
+                    conn,
+                    app["id"],
+                    run_id,
+                    "MANUAL_REVIEW",
+                    ("COLLATERAL_LIMIT",),
+                    actor_id=None,
+                    comment=(
+                        "Предложения превышают "
+                        "лимит залогового обеспечения"
+                    ),
+                )
+
+                version = _change_status(
+                    conn,
+                    actor_id=None,
+                    app_id=app["id"],
+                    version=app["version"],
+                    old="CHECKING",
+                    new="UNDER_REVIEW",
+                )
+
+                return {
+                    "application_id": app["id"],
+                    "status": "UNDER_REVIEW",
+                    "version": version,
+                    "decision_type": "MANUAL_REVIEW",
+                    "reason_codes": ["COLLATERAL_LIMIT"],
+                    "next_step": "BANK_REVIEW",
+                }
+
         decision_id = _write_decision(
             conn, app['id'], run_id, out.decision_hint, out.reason_codes, actor_id=None,
             comment='Условия по результату проверки и оценки')
-        for rank, cand in enumerate(out.candidates, start=1):
+        for rank, cand in enumerate(candidates, start=1):
             conn.execute(text('''INSERT INTO alfa.credit_offers
                 (application_id,decision_id,amount,term,rate,monthly_payment,rank)
                 VALUES (:app,:decision,:amount,:term,:rate,:payment,:rank)'''), {
@@ -220,6 +319,9 @@ def manual_decision(conn: Connection, actor: Actor, app_id: UUID, data) -> dict:
         if scoring['risk'] == 'HIGH':
             raise ApiProblem(409, 'HIGH_RISK', 'Модель пометила заявку как высокорисковую')
         product = run['product_snapshot']
+        collateral_limit = collateral_limit_for_offer(
+            conn, app_id
+        )
         accepted = []
         seen = set()
         for i, offer in enumerate(data.offers, start=1):
@@ -232,6 +334,18 @@ def manual_decision(conn: Connection, actor: Actor, app_id: UUID, data) -> dict:
             if (amount, months) in seen:
                 raise ApiProblem(422, 'DUPLICATE_OFFERS', 'Повторяющиеся предложения запрещены')
             seen.add((amount, months))
+            if (
+                collateral_limit is not None
+                and amount > collateral_limit
+            ):
+                raise ApiProblem(
+                    422,
+                    "COLLATERAL_LIMIT",
+                    (
+                        "Сумма кредита превышает "
+                        f"лимит по залогу: {collateral_limit} ₽"
+                    ),
+                )
             payment = annuity(amount, months, rate)
             if payment > scoring['max_new_payment']:
                 raise ApiProblem(422, 'PAYMENT_OVER_LIMIT',

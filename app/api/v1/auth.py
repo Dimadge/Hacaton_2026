@@ -99,6 +99,27 @@ def register(data: RegisterRequest, conn: Connection = Depends(get_connection)):
             'email': email, 'password_hash': PasswordHasher().hash(data.password),
             'company': company_id, 'phone': phone,
         })
+        conn.execute(
+            text("""
+                INSERT INTO alfa.mock_profiles (
+                    company_id,
+                    registry_flag,
+                    credit_history_flag
+                )
+                SELECT
+                    :company,
+                    d.registry_flag,
+                    d.credit_history_flag
+                FROM alfa.demo_external_profiles d
+                WHERE d.inn = :inn
+                ON CONFLICT (company_id) DO NOTHING
+            """),
+            {
+                "company": company_id,
+                "inn": inn,
+            },
+        )
+
     except IntegrityError:
         raise ApiProblem(409, 'EMAIL_TAKEN', 'Кабинет с такой почтой уже есть') from None
     return _issue_token(conn, email)

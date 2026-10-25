@@ -2,7 +2,7 @@
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .application import Amount
 
@@ -43,3 +43,32 @@ class CollateralOut(BaseModel):
     has_encumbrance: bool | None
     status: str
     review_comment: str | None
+
+
+class CollateralReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["UNDER_REVIEW", "ACCEPTED", "REJECTED"]
+    assessed_value: Amount | None = None
+    has_encumbrance: bool | None = None
+    review_comment: str | None = Field(
+        default=None, max_length=4000
+    )
+
+    @field_validator("assessed_value", mode="before")
+    @classmethod
+    def validate_money(cls, value):
+        if isinstance(value, (bool, float)):
+            raise ValueError("Стоимость передавайте строкой")
+        return value
+
+    @model_validator(mode="after")
+    def validate_review(self):
+        if self.status == "ACCEPTED" and self.assessed_value is None:
+            raise ValueError("Укажите оценочную стоимость")
+
+        if self.status in ("ACCEPTED", "REJECTED"):
+            if not self.review_comment or not self.review_comment.strip():
+                raise ValueError("Комментарий обязателен")
+
+        return self

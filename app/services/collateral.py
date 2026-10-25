@@ -47,3 +47,103 @@ def list_for_bank(conn: Connection, app_id: UUID) -> list[dict]:
     if exists is None:
         raise ApiProblem(404, 'NOT_FOUND', 'Заявка не найдена')
     return _rows(conn, app_id)
+
+
+def review_for_bank(
+    conn: Connection,
+    actor: Actor,
+    app_id: UUID,
+    collateral_id: UUID,
+    data,
+) -> dict:
+    application_status = conn.execute(
+        text("""
+            SELECT status
+            FROM alfa.loan_applications
+            WHERE id = :app
+            FOR UPDATE
+        """),
+        {"app": app_id},
+    ).scalar_one_or_none()
+
+    if application_status is None:
+        raise ApiProblem(404, "NOT_FOUND", "Заявка не найдена")
+    if application_status not in ("CHECKING", "UNDER_REVIEW"):
+        raise ApiProblem(
+            409,
+            "INVALID_STATE_TRANSITION",
+            "Залог нельзя переоценивать после окончательного решения",
+        )
+
+    row = conn.execute(
+        text("""
+            SELECT id, status, has_encumbrance
+            FROM alfa.application_collateral
+            WHERE id = :id AND application_id = :app
+            FOR UPDATE
+        """),
+        {"id": collateral_id, "app": app_id},
+    ).mappings().first()
+
+    if row is None:
+        raise ApiProblem(404, "NOT_FOUND", "Залог не найден")
+
+    if row["status"] not in ("DECLARED", "UNDER_REVIEW"):
+        raise ApiProblem(
+            409, "INVALID_STATE_TRANSITION",
+            "Оценка залога уже завершена"
+        )
+
+    encumbrance = (
+        data.has_encumbrance
+        if data.has_encumbrance is not None
+        else row["has_encumbrance"]
+    )
+
+    if data.status == "ACCEPTED":
+        if encumbrance is None:
+            raise ApiProblem(
+                422, "ENCUMBRANCE_UNKNOWN",
+                "Необходимо проверить обременения"
+            )
+
+        if encumbrance:
+            raise ApiProblem(
+                422, "ENCUMBERED_COLLATERAL",
+                "Залог с обременением требует отдельной проверки"
+            )
+
+    final = data.status in ("ACCEPTED", "REJECTED")
+
+    result = conn.execute(
+        text("""
+            UPDATE alfa.application_collateral
+            SET status = :status,
+                assessed_value = :value,
+                has_encumbrance = :encumbrance,
+                review_comment = :comment,
+                reviewed_by = :reviewer,
+                reviewed_at = CASE
+                    WHEN :final THEN now()
+                    ELSE NULL
+                END
+            WHERE id = :id AND application_id = :app
+            RETURNING
+                id, collateral_type, description,
+                owner_name, ownership_type,
+                declared_value, assessed_value,
+                has_encumbrance, status, review_comment
+        """),
+        {
+            "id": collateral_id,
+            "app": app_id,
+            "status": data.status,
+            "value": data.assessed_value,
+            "encumbrance": encumbrance,
+            "comment": data.review_comment,
+            "reviewer": actor.id if final else None,
+            "final": final,
+        },
+    ).mappings().one()
+
+    return dict(result)

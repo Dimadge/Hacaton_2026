@@ -86,6 +86,7 @@ class FakeBankDB:
         self.status, self.version = status, 3
         self.fns, self.bki, self.documented = fns,bki,documented
         self.score, self.risk = score,risk
+        self.collateral = []
         self.decisions = []
         self.reasons = []
         self.offers = []
@@ -107,6 +108,8 @@ class FakeBankDB:
                     'min_term':12,'max_term':60,'demo_rate':'0.18'}, 'rule_version':'rules-v1'})
         if 'FROM alfa.verifications' in sql:
             return RowResult(many=[{'source':'FNS','result':self.fns},{'source':'BKI','result':self.bki}])
+        if 'FROM alfa.application_collateral' in sql:
+            return RowResult(many=self.collateral)
         if 'FROM alfa.scoring_results' in sql:
             return RowResult(one=({'score':self.score,'risk':self.risk,
                                    'max_new_payment':Decimal('90000')} if self.score is not None else None))
@@ -115,7 +118,7 @@ class FakeBankDB:
             ident=uuid4(); self.decisions.append((ident,params)); return RowResult(scalar=ident)
         if 'FROM alfa.reason_codes' in sql: return RowResult(scalar=1 if params['code'] in
             {'DOCS_MISSING','REGISTRY_INACTIVE','CREDIT_HISTORY_CRITICAL','CREDIT_HISTORY_DELAY',
-             'REGISTRY_MISMATCH','UNKNOWN_VERIFICATION','RISK_HIGH','RISK_MEDIUM'} else None)
+             'REGISTRY_MISMATCH','UNKNOWN_VERIFICATION','RISK_HIGH','RISK_MEDIUM', 'COLLATERAL_LIMIT'} else None)
         if 'INSERT INTO alfa.decision_reasons' in sql:
             self.reasons.append(params['code']); return RowResult()
         if "set_config('app.actor_id'" in sql: return RowResult()
@@ -246,3 +249,142 @@ def test_bank_action_requires_status_under_review():
         decisions.manual_decision(db,db.actor,db.app_id,
             BankDecisionIn(version=3,action='REJECT',reason_codes=['RISK_HIGH']))
     assert err.value.code == 'INVALID_STATE_TRANSITION'
+
+
+def test_collateral_rejects_excess_amount():
+    db = FakeBankDB(
+        score=65,
+        risk="MEDIUM",
+        status="UNDER_REVIEW",
+    )
+
+    db.collateral = [{
+        "status": "ACCEPTED",
+        "assessed_value": Decimal("2000000.00"),
+        "has_encumbrance": False,
+    }]
+
+    offer = BankDecisionIn(
+        version=3,
+        action="APPROVE",
+        offers=[{
+            "amount": "1500000.00",
+            "term_months": 48,
+        }],
+    )
+
+    with pytest.raises(ApiProblem) as exc:
+        decisions.manual_decision(
+            db, db.actor, db.app_id, offer
+        )
+
+    assert exc.value.code == "COLLATERAL_LIMIT"
+    assert db.offers == []
+
+
+def test_collateral_accepts_amount_within_limit():
+    db = FakeBankDB(
+        score=65,
+        risk="MEDIUM",
+        status="UNDER_REVIEW",
+    )
+
+    db.collateral = [{
+        "status": "ACCEPTED",
+        "assessed_value": Decimal("2000000.00"),
+        "has_encumbrance": False,
+    }]
+
+    offer = BankDecisionIn(
+        version=3,
+        action="APPROVE",
+        offers=[{
+            "amount": "1000000.00",
+            "term_months": 48,
+        }],
+    )
+
+    result = decisions.manual_decision(
+        db, db.actor, db.app_id, offer
+    )
+
+    assert result["status"] == "OFFERED"
+    assert len(db.offers) == 1
+
+
+def test_unreviewed_collateral_blocks_approval():
+    db = FakeBankDB(
+        score=65,
+        risk="MEDIUM",
+        status="UNDER_REVIEW",
+    )
+
+    db.collateral = [{
+        "status": "DECLARED",
+        "assessed_value": None,
+        "has_encumbrance": False,
+    }]
+
+    offer = BankDecisionIn(
+        version=3,
+        action="APPROVE",
+        offers=[{
+            "amount": "1000000.00",
+            "term_months": 48,
+        }],
+    )
+
+    with pytest.raises(ApiProblem) as exc:
+        decisions.manual_decision(
+            db, db.actor, db.app_id, offer
+        )
+
+    assert exc.value.code == "COLLATERAL_PENDING"
+    assert db.offers == []
+
+
+def test_auto_offer_blocked_by_collateral(monkeypatch):
+    from types import SimpleNamespace
+    import app.scoring
+    import app.services.scoring_adapter
+
+    db = FakeBankDB(score=85, risk="LOW")
+
+    db.collateral = [{
+        "status": "ACCEPTED",
+        "assessed_value": Decimal("2000000.00"),
+        "has_encumbrance": False,
+    }]
+
+    candidate = SimpleNamespace(
+        amount=Decimal("2000000.00"),
+        term_months=48,
+        rate=Decimal("0.18"),
+        monthly_payment=Decimal("50000.00"),
+    )
+
+    output = SimpleNamespace(
+        candidates=[candidate],
+        decision_hint="APPROVE",
+        reason_codes=[],
+    )
+
+    monkeypatch.setattr(
+        app.scoring,
+        "score_application",
+        lambda inp: output,
+    )
+
+    monkeypatch.setattr(
+        app.services.scoring_adapter,
+        "build_scoring_input",
+        lambda conn, run: None,
+    )
+
+    result = decisions.bank_evaluate(
+        db, db.actor, db.app_id
+    )
+
+    assert result["status"] == "UNDER_REVIEW"
+    assert result["reason_codes"] == ["COLLATERAL_LIMIT"]
+    assert db.offers == []

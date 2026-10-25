@@ -18,12 +18,19 @@ class BankQueueItem(BaseModel):
     created_at: datetime
 
 
+
 class BankApplicationOut(BankQueueItem):
     document_confirmed: bool
     evaluation_run_id: UUID | None
     verification_results: dict[str, str]
     scoring_ready: bool
+
+    max_new_payment: Decimal | None = None
+    collateral_limit: Decimal | None = None
+    collateral_status: str = "NOT_DECLARED"
+
     client_clarification: str | None = None
+
 
 
 class EvaluateOut(BaseModel):

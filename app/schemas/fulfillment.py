@@ -12,6 +12,15 @@ class AcceptOfferIn(VersionedAction):
     offer_id: UUID
 
 
+class SignWithCodeIn(VersionedAction):
+    code: str = Field(pattern=r"^[0-9]{6}$")
+
+
+class SignCodeOut(BaseModel):
+    expires_in_seconds: int
+    demo_code: str
+
+
 class FulfillmentOut(BaseModel):
     id: UUID
     status: str

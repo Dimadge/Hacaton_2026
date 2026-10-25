@@ -8,7 +8,7 @@ from ...schemas.decision import (BankQueueItem, BankApplicationOut,
                                  BankDecisionIn, EvaluateOut)
 from ...services import decisions
 from ...services.scoring_adapter import execute_and_save_scoring
-from ...schemas.collateral import CollateralOut
+from ...schemas.collateral import CollateralOut, CollateralReviewIn
 from ...services import collateral as collateral_service
 from decimal import Decimal
 from ...scoring.explain import calculate_score_breakdown, generate_bank_underwriter_summary
@@ -39,6 +39,23 @@ def application_collateral(application_id: UUID,
                            _actor: Actor = Depends(require_bank_employee),
                            conn: Connection = Depends(get_connection)):
     return collateral_service.list_for_bank(conn, application_id)
+
+@router.patch(
+    "/applications/{application_id}/collateral/{collateral_id}",
+    response_model=CollateralOut,
+    summary="Банковская оценка залогового имущества",
+)
+def review_collateral(
+    application_id: UUID,
+    collateral_id: UUID,
+    data: CollateralReviewIn,
+    actor: Actor = Depends(require_bank_employee),
+    conn: Connection = Depends(get_connection),
+):
+    return collateral_service.review_for_bank(
+        conn, actor, application_id, collateral_id, data
+    )
+
 
 
 @router.post('/applications/{application_id}/evaluate', response_model=EvaluateOut,

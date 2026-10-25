@@ -74,6 +74,7 @@ export const REASONS: Record<string, string> = {
   RISK_HIGH: "Высокий риск по результатам оценки.",
   RISK_MEDIUM: "Требуется ручная оценка риска.",
   UNKNOWN_VERIFICATION: "Результат проверки: нужна ручная обработка.",
+  COLLATERAL_LIMIT: "Недостаточно принятого залогового обеспечения.",
 };
 
 export function reasonText(code: string): string {
