@@ -28,12 +28,10 @@ def calculate_annuity_payment(amount: Decimal, annual_rate: Decimal, term_months
     if annual_rate == Decimal("0.00"):
         return (amount / Decimal(term_months)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    r = float(annual_rate) / 12.0
-    n = float(term_months)
-    amt = float(amount)
-
-    payment = amt * (r / (1.0 - ((1.0 + r) ** (-n))))
-    return Decimal(str(payment)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    # Та же формула, что в триггере guard_offer: amount * r / (1 - (1+r)^-n), r = ставка/12.
+    r = annual_rate / Decimal(12)
+    payment = amount * r / (Decimal(1) - (Decimal(1) + r) ** (-term_months))
+    return payment.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 # обратный аннуитет макс. сумма займа под заданный платеж

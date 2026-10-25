@@ -35,6 +35,10 @@ def build_scoring_input(conn: Connection, run_id: UUID) -> ScoringInput:
         requested_amount=snapshot['requested_amount'],
         term_months=snapshot['term_months'],
         demo_rate=product['demo_rate'],
+        min_amount=product.get('min_amount'),
+        max_amount=product.get('max_amount'),
+        min_term=product.get('min_term'),
+        max_term=product.get('max_term'),
         credit_history_flag=values['BKI'],
         company_registry_flag=values['FNS'],
     )
@@ -60,15 +64,18 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
     run_id = run["id"]
 
     already = conn.execute(
-        text("SELECT id, score, risk FROM alfa.scoring_results WHERE run_id=:run"),
+        text("SELECT id, score, risk, factors FROM alfa.scoring_results WHERE run_id=:run"),
         {"run": run_id},
     ).mappings().first()
     if already:
+        factors = already["factors"] or {}
         return {
             "application_id": str(app_id),
             "scoring_id": str(already["id"]),
             "score": already["score"],
             "risk": already["risk"],
+            "decision_hint": factors.get("decision_hint"),
+            "offers_count": 0,
             "status": app["status"],
         }
 
@@ -123,59 +130,6 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
                 {"sid": scoring_id, "code": code},
             )
 
-    target_status = app["status"]
-    if out.candidates and out.decision_hint in ("APPROVE", "COUNTER_OFFER"):
-        next_seq = conn.execute(
-            text("SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM alfa.credit_decisions WHERE run_id=:run"),
-            {"run": run_id},
-        ).scalar_one()
-
-        decision_id = conn.execute(
-            text("""INSERT INTO alfa.credit_decisions
-                    (application_id, run_id, sequence_no, decision_type, created_by, comment)
-                    VALUES (:app, :run, :seq, CAST(:kind AS alfa.decision_kind), NULL, :comment)
-                    RETURNING id"""),
-            {
-                "app": app_id,
-                "run": run_id,
-                "seq": next_seq,
-                "kind": out.decision_hint,
-                "comment": "Автоматический подбор условий на основе оценки DS",
-            },
-        ).scalar_one()
-
-        for code in out.reason_codes:
-            conn.execute(
-                text("""INSERT INTO alfa.decision_reasons (decision_id, reason_code)
-                        VALUES (:dec_id, :code) ON CONFLICT DO NOTHING"""),
-                {"dec_id": decision_id, "code": code},
-            )
-
-        for rank, cand in enumerate(out.candidates, start=1):
-            conn.execute(
-                text("""INSERT INTO alfa.credit_offers
-                        (application_id, decision_id, amount, term, rate, monthly_payment, rank)
-                        VALUES (:app, :dec, :amount, :term, :rate, :pmt, :rank)"""),
-                {
-                    "app": app_id,
-                    "dec": decision_id,
-                    "amount": cand.amount,
-                    "term": cand.term_months,
-                    "rate": cand.rate,
-                    "pmt": cand.monthly_payment,
-                    "rank": rank,
-                },
-            )
-
-        conn.execute(text("SELECT set_config('app.actor_id', '', true)"))
-        conn.execute(
-            text("""UPDATE alfa.loan_applications
-                    SET status='OFFERED'
-                    WHERE id=:app AND version=:ver"""),
-            {"app": app_id, "ver": app["version"]},
-        )
-        target_status = "OFFERED"
-
     return {
         "application_id": str(app_id),
         "scoring_id": str(scoring_id),
@@ -183,5 +137,5 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
         "risk": out.risk_level,
         "decision_hint": out.decision_hint,
         "offers_count": len(out.candidates),
-        "status": target_status,
+        "status": app["status"],
     }
