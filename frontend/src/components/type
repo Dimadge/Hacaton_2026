@@ -1,0 +1,35 @@
+import { Link, Navigate, Outlet } from "react-router-dom";
+import { useAuth } from "../features/auth/session";
+import { Button } from "./ui";
+
+export function Layout({ role }: { role: "CLIENT" | "BANK_EMPLOYEE" }) {
+  const { session, logout } = useAuth();
+  if (!session) return <Navigate to="/login" replace />;
+  if (session.role !== role) return <Navigate to={session.role === "CLIENT" ? "/client" : "/bank"} replace />;
+
+  return (
+    <div className="mx-auto min-h-screen max-w-5xl px-4 py-6">
+      <header className="mb-6 flex items-center justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-neutral-500">Учебный прототип</p>
+          <Link to={role === "CLIENT" ? "/client" : "/bank"} className="text-xl font-semibold">Альфа.Навигатор</Link>
+        </div>
+        <nav className="flex items-center gap-3 text-sm">
+          {role === "CLIENT" && (
+            <>
+              <Link to="/client">Кабинет</Link>
+              <Link to="/client/products">Продукты</Link>
+              <Link to="/client/applications/new">Новая заявка</Link>
+            </>
+          )}
+          {role === "BANK_EMPLOYEE" && <Link to="/bank">Очередь</Link>}
+          <Button kind="ghost" onClick={logout}>Выйти</Button>
+        </nav>
+      </header>
+      <Outlet />
+      <p className="mt-8 text-xs text-neutral-500">
+        Синтетические данные. Ставки и решение учебные и не являются методикой банка.
+      </p>
+    </div>
+  );
+}
