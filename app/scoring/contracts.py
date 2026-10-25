@@ -28,6 +28,10 @@ class ScoringInput(StrictMoney):
     requested_amount: Decimal = Field(gt=0)
     term_months: int = Field(gt=0)
     demo_rate: Decimal = Field(ge=0, le=1)
+    min_amount: Decimal | None = None
+    max_amount: Decimal | None = None
+    min_term: int | None = None
+    max_term: int | None = None
     credit_history_flag: Literal['good', 'minor_delay', 'critical', 'unknown']
     company_registry_flag: Literal['active', 'inactive', 'mismatch', 'unknown']
 

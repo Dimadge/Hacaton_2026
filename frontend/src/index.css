@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+body {
+  margin: 0;
+  background: #f2f3f5;
+  color: #121212;
+  font-family: Manrope, "Segoe UI", system-ui, sans-serif;
+}
+
+::selection {
+  background: #ef3124;
+  color: white;
+}
+
+button,
+a,
+select,
+summary,
+label:has(input) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}

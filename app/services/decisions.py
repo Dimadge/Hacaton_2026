@@ -130,6 +130,37 @@ def bank_application(conn: Connection, app_id: UUID) -> dict:
             'client_clarification': run['input_snapshot'].get('client_clarification') if run else None}
 
 
+def _publish_scored_offers(conn: Connection, app: dict, run_id: UUID) -> dict:
+    """Решение и предложения только после отдельного расчёта скоринга."""
+    from ..scoring import score_application
+    from .scoring_adapter import build_scoring_input
+
+    out = score_application(build_scoring_input(conn, run_id))
+    if out.candidates and out.decision_hint in ('APPROVE', 'COUNTER_OFFER'):
+        decision_id = _write_decision(
+            conn, app['id'], run_id, out.decision_hint, out.reason_codes, actor_id=None,
+            comment='Условия по результату проверки и оценки')
+        for rank, cand in enumerate(out.candidates, start=1):
+            conn.execute(text('''INSERT INTO alfa.credit_offers
+                (application_id,decision_id,amount,term,rate,monthly_payment,rank)
+                VALUES (:app,:decision,:amount,:term,:rate,:payment,:rank)'''), {
+                'app': app['id'], 'decision': decision_id, 'amount': cand.amount,
+                'term': cand.term_months, 'rate': cand.rate,
+                'payment': cand.monthly_payment, 'rank': rank})
+        version = _change_status(conn, actor_id=None, app_id=app['id'],
+                                 version=app['version'], old='CHECKING', new='OFFERED')
+        return {'application_id': app['id'], 'status': 'OFFERED', 'version': version,
+                'decision_type': out.decision_hint, 'reason_codes': list(out.reason_codes),
+                'next_step': 'CLIENT_OFFER'}
+    _write_decision(conn, app['id'], run_id, 'REJECT', out.reason_codes or ('RISK_HIGH',),
+                    actor_id=None, comment='Проверка не нашла допустимых условий')
+    version = _change_status(conn, actor_id=None, app_id=app['id'],
+                             version=app['version'], old='CHECKING', new='REJECTED')
+    return {'application_id': app['id'], 'status': 'REJECTED', 'version': version,
+            'decision_type': 'REJECT', 'reason_codes': list(out.reason_codes),
+            'next_step': 'FINAL'}
+
+
 def bank_evaluate(conn: Connection, actor: Actor, app_id: UUID) -> dict:
     """Запуск policy после ФНС/БКИ, пока вручную (не ломает BE-06 submit).
 
@@ -152,6 +183,8 @@ def bank_evaluate(conn: Connection, actor: Actor, app_id: UUID) -> dict:
                                  document_confirmed=bool(docs),
                                  score=scoring['score'] if scoring else None,
                                  risk=scoring['risk'] if scoring else None)
+    if outcome.next_step == 'OFFERS_PENDING' and scoring:
+        return _publish_scored_offers(conn, app, run['id'])
     if outcome.target_status is None:
         return {'application_id': app_id, 'status': app['status'], 'version': app['version'],
                 'decision_type': None, 'reason_codes': list(outcome.reason_codes),

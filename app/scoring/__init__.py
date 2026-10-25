@@ -70,6 +70,8 @@ def score_application(data: ScoringInput) -> ScoringOutput:
                 requested_term=data.term_months,
                 rate=data.demo_rate,
                 max_payment=max_payment,
+                max_product_term=data.max_term or 60,
+                min_product_amount=data.min_amount or Decimal("500000"),
             )
             if not candidates:
                 decision_hint = "REJECT"
