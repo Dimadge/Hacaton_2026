@@ -1,0 +1,17 @@
+digraph Alfa {
+  graph [rankdir=TB, bgcolor="transparent", pad=0.22, nodesep=0.55, ranksep=0.64, label="АЛЬФА.НАВИГАТОР · Архитектура MVP", labelloc=t, fontname="DejaVu Sans", fontsize=19, fontcolor="#202938"];
+  node [shape=box, style="rounded,filled", color="#dae1e8", fillcolor="#f5f8fb", fontname="DejaVu Sans", fontsize=11, fontcolor="#202938", margin="0.22,0.16"];
+  edge [color="#6a798b", arrowsize=0.65, penwidth=1.4, fontname="DejaVu Sans", fontsize=10];
+  client [label="Клиент / Банкир", fillcolor="#eaf3ff", color="#72a4f4"];
+  fe [label="React / TypeScript\nКабинеты, заявки, новости", fillcolor="#eaf3ff", color="#72a4f4"];
+  nginx [label="Nginx\nSPA + обратный прокси", fillcolor="#fff4ec", color="#f5ae75"];
+  api [label="FastAPI + JWT\nAPI и бизнес-правила", fillcolor="#fff0ed", color="#e97a76"];
+  db [label="PostgreSQL 16\nКомпании · Заявки · Аудит", fillcolor="#eff9ec", color="#79ba7d"];
+  rules [label="DS Scoring\nРиск · Офферы · Лимиты", fillcolor="#eff9ec", color="#79ba7d"];
+  mocks [label="Mock ФНС / БКИ\nСинтетические операции", fillcolor="#f1edff", color="#af98f5"];
+  ollama [label="Ollama (опционально)\nОбъяснение / fallback", style="rounded,dashed", color="#9ca4b2"];
+  client->fe; fe->nginx; nginx->api [label="/api/v1 · JWT"];
+  api->db [dir=both]; api->rules [dir=both]; api->mocks [dir=both]; rules->db;
+  api->ollama [style=dashed];
+  {rank=same; db; rules; mocks; ollama}
+}

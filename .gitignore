@@ -1,31 +1,25 @@
-# Локальные настройки и секреты
-.env
 .env.*
 !.env.example
 
-# Резервные копии и выгрузки данных
 backups/
 *.dump
 *.backup
 
-# Загруженные пользователями документы
 uploads/
 
-# Если появится локальная папка данных PostgreSQL
+
 postgres_data/
 pgdata/
 
-# Python
 __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
 
-# Frontend
+
 node_modules/
 dist/
 
-# Логи и файлы ОС
 *.log
 .DS_Store
 Thumbs.db

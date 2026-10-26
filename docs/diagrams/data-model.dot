@@ -1,0 +1,22 @@
+digraph AlfaData {
+  graph [rankdir=LR, bgcolor="transparent", pad=0.2, nodesep=0.48, ranksep=0.72, label="АЛЬФА.НАВИГАТОР · Логическая модель данных", labelloc=t, fontname="DejaVu Sans", fontsize=17, fontcolor="#202938"];
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=10, color="#d0d6dc", fillcolor="#f6f9fc", margin="0.16,0.13"];
+  edge [color="#8c9caf", arrowsize=0.6, penwidth=1.2];
+  companies [label="companies\n1 компания",fillcolor="#e7f2ff"];
+  users [label="users\nклиент / банкир",fillcolor="#e7f2ff"];
+  apps [label="loan_applications\nзаявка / статус / версия",fillcolor="#fef0e8",color="#e4a587"];
+  products [label="credit_products\nпродукты",fillcolor="#f6edf9"];
+  financials [label="financial_profiles\nфинансовые снимки"];
+  coll [label="application_collateral\nзаявлено / оценено"];
+  runs [label="evaluation_runs\nзапуск проверки"];
+  checks [label="verifications\nFNS / BKI"];
+  scores [label="scoring_results\nDS / риск"];
+  decisions [label="credit_decisions\nрешение"];
+  offers [label="credit_offers\nпредложения"];
+  events [label="application_events\nистория"];
+  sign [label="signing_codes\nOTP-хеш"];
+  profiles [label="mock_profiles / demo_external_profiles\nсинтетические источники"];
+  companies -> users; companies -> apps; products -> apps;
+  apps -> financials; apps -> coll; apps -> runs; apps -> events; apps -> sign;
+  runs -> checks; runs -> scores; runs -> decisions; decisions -> offers; profiles -> checks [style=dashed];
+}
