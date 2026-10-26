@@ -15,8 +15,8 @@ from ..core.errors import ApiProblem
 from ..core.security import Actor
 from ..repository import actor_company
 from .applications import _get_raw
+from .bank_turnover import get_bank_history_metrics
 
-# Та же state machine, что и alfa.allowed_transitions (db/init/001_shema.sql).
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     'DRAFT': frozenset({'SUBMITTED'}),
     'SUBMITTED': frozenset({'CHECKING'}),
@@ -30,7 +30,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     'REJECTED': frozenset(),
     'CANCELLED': frozenset(),
 }
-RULE_VERSION = 'rules-v1'
+RULE_VERSION = 'rules-v2-bank'
 
 
 def ensure_transition(current: str, target: str) -> None:
@@ -42,7 +42,6 @@ def ensure_transition(current: str, target: str) -> None:
 def _hash_request(application_id: UUID, version: int,
                   clarification: str | None = None) -> str:
     request = {'application_id': str(application_id), 'version': version}
-    # Сохраняем прежний hash для старых запросов без пояснения.
     if clarification is not None:
         request['clarification'] = clarification
     canonical = json.dumps(request, sort_keys=True, separators=(',', ':'))
@@ -50,7 +49,6 @@ def _hash_request(application_id: UUID, version: int,
 
 
 def _snapshot(row) -> dict:
-    """Все денежные значения — строки, чтобы JSON не терял точность Decimal."""
     return {
         'company_id': str(row['company_id']),
         'requested_amount': str(row['amount']),
@@ -68,22 +66,16 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
                idempotency_key: str | None = None,
                clarification: str | None = None) -> dict:
     '''Первичная подача DRAFT или повторная подача NEED_INFO.
-
     DRAFT -> SUBMITTED -> CHECKING (2 события/версии).
     NEED_INFO -> CHECKING (1 событие/версия), обязательно с новыми данными
-    и/или пояснением. Каждый реальный submit создаёт новый evaluation_run;
-    триггер БД пишет аудит, а все операции атомарны в get_connection().
+    и/или пояснением. Каждый submit создаёт новый evaluation_run.
     '''
-    # Сериализуем использование idempotency key, в том числе в параллельных запросах.
     if idempotency_key is not None:
         conn.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))'),
                      {'scope': f'{actor.id}:SUBMIT:{idempotency_key}'})
     actor_company(conn, actor.id)
     row = _get_raw(conn, actor, application_id, lock=True)
     request_hash = _hash_request(application_id, version, clarification)
-
-    # Idempotency ответ проверяем до version/status — ранее завершённый запрос
-    # должен возвращать тот же результат даже после перехода в другое состояние.
     if idempotency_key is not None:
         previous_key = conn.execute(text('''SELECT request_hash,response_body
             FROM alfa.idempotency_keys
@@ -96,7 +88,6 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
             if previous_key['response_body'] is None:
                 raise ApiProblem(409, 'REQUEST_IN_PROGRESS', 'Запрос ещё обрабатывается')
             return previous_key['response_body']
-
     if row['version'] != version:
         raise ApiProblem(409, 'VERSION_CONFLICT',
                          'Версия заявки устарела. Обновите карточку заявки')
@@ -110,9 +101,12 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
                          'Отправка доступна только из DRAFT или NEED_INFO')
 
     input_snapshot = _snapshot(row)
+    # Банковскую историю сохраняем в момент подачи заявки.
+    input_snapshot['bank_history'] = get_bank_history_metrics(
+        conn, row['company_id']
+    )
     if clarification is not None:
         input_snapshot['client_clarification'] = clarification
-
     if state == 'NEED_INFO':
         prior_run = conn.execute(text('''SELECT input_snapshot
             FROM alfa.evaluation_runs WHERE application_id=:app
@@ -124,7 +118,6 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
         if prior_run['input_snapshot'] == input_snapshot:
             raise ApiProblem(409, 'NO_NEW_INFORMATION',
                              'Сначала уточните данные анкеты через PATCH или добавьте пояснение')
-
     product = conn.execute(text('''SELECT code,min_amount,max_amount,min_term,max_term,demo_rate
         FROM alfa.credit_products WHERE id=:product'''),
         {'product': row['product_id']}).mappings().first()
@@ -150,7 +143,6 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
             raise ApiProblem(409, 'VERSION_CONFLICT', 'Заявка уже изменена')
         submission_version = submitted['version']
     else:
-        # В БД нет перехода NEED_INFO -> SUBMITTED: сразу в CHECKING.
         checking = conn.execute(text('''UPDATE alfa.loan_applications
             SET status='CHECKING'
             WHERE id=:app AND company_id=:company AND version=:version AND status='NEED_INFO'
@@ -159,7 +151,6 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
         if checking is None:
             raise ApiProblem(409, 'VERSION_CONFLICT', 'Заявка уже изменена')
         submission_version = checking['version']
-
     run = conn.execute(text('''INSERT INTO alfa.evaluation_runs
         (application_id,financial_profile_id,submission_version,rule_version,input_snapshot,product_snapshot)
         VALUES (:app,:profile,:submitted_version,:rule_version,
@@ -174,7 +165,6 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
     }).mappings().first()
     if run is None:
         raise RuntimeError('Не удалось создать цикл проверки')
-
     if state == 'DRAFT':
         ensure_transition('SUBMITTED', 'CHECKING')
         checking = conn.execute(text('''UPDATE alfa.loan_applications
@@ -185,8 +175,7 @@ def submit_one(conn: Connection, actor: Actor, application_id: UUID, version: in
             'version': submitted['version'],
         }).mappings().first()
         if checking is None:
-            raise ApiProblem(409, 'VERSION_CONFLICT', 'Заявка уже изменилась во время подачи')
-
+            raise ApiProblem(409, 'VERSION_CONFLICT', 'Заявка изменилась во время подачи')
     output = {
         'id': str(application_id), 'status': 'CHECKING',
         'version': checking['version'], 'evaluation_run_id': str(run['id']),

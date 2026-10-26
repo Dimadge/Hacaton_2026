@@ -1,5 +1,5 @@
-"""Преобразование сохранённой версии заявки + ФНС/БКИ в ScoringInput,
-расчет скоринга DS и атомарное сохранение результатов в PostgreSQL.
+"""Преобразование сохранённой заявки и ФНС/БКИ в ScoringInput.
+Расчёт скоринга и атомарное сохранение результатов в PostgreSQL.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from sqlalchemy import Connection, text
 from ..core.errors import ApiProblem
 from ..scoring.contracts import ScoringInput, ScoringOutput
 from ..scoring import score_application
+from ..scoring.bank_history import calculate_bank_score
 from ..scoring.finance import calculate_cash_flow, calculate_annuity_payment
 
 
@@ -41,6 +42,7 @@ def build_scoring_input(conn: Connection, run_id: UUID) -> ScoringInput:
         max_term=product.get('max_term'),
         credit_history_flag=values['BKI'],
         company_registry_flag=values['FNS'],
+        bank_history=snapshot.get('bank_history'),
     )
 
 
@@ -51,7 +53,6 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
     ).mappings().first()
     if not app:
         raise ApiProblem(404, "NOT_FOUND", "Заявка не найдена")
-
     run = conn.execute(
         text("""SELECT id, input_snapshot, product_snapshot, rule_version
                 FROM alfa.evaluation_runs WHERE application_id=:app
@@ -62,7 +63,6 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
         raise ApiProblem(409, "NO_EVALUATION", "Цикл проверки не найден")
 
     run_id = run["id"]
-
     already = conn.execute(
         text("SELECT id, score, risk, factors FROM alfa.scoring_results WHERE run_id=:run"),
         {"run": run_id},
@@ -78,14 +78,13 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
             "offers_count": 0,
             "status": app["status"],
         }
-
     inp = build_scoring_input(conn, run_id)
     out: ScoringOutput = score_application(inp)
 
     cash_flow = calculate_cash_flow(inp.monthly_revenue, inp.operating_expenses)
     req_payment = calculate_annuity_payment(inp.requested_amount, inp.demo_rate, inp.term_months)
     score_raw = Decimal(str(out.score)).quantize(Decimal("0.00001"))
-
+    bank_factor = calculate_bank_score(inp.bank_history, inp.monthly_revenue)
     factors = {
         "monthly_revenue": str(inp.monthly_revenue),
         "operating_expenses": str(inp.operating_expenses),
@@ -95,8 +94,11 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
         "requested_payment": str(req_payment),
         "max_new_payment": str(out.max_new_monthly_payment),
         "decision_hint": out.decision_hint,
+        "bank_history": inp.bank_history.model_dump(mode="json") if inp.bank_history else None,
+        "bank_score": bank_factor.score,
+        "bank_ratio": str(bank_factor.ratio) if bank_factor.ratio is not None else None,
+        "bank_unstable": bank_factor.unstable,
     }
-
     scoring_id = conn.execute(
         text("""INSERT INTO alfa.scoring_results
                 (application_id, run_id, score, score_raw, risk, max_new_payment,
@@ -117,7 +119,6 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
             "factors": json.dumps(factors),
         },
     ).scalar_one()
-
     for code in out.reason_codes:
         valid = conn.execute(
             text("SELECT 1 FROM alfa.reason_codes WHERE code=:code"),
@@ -129,7 +130,6 @@ def execute_and_save_scoring(conn: Connection, app_id: UUID) -> dict:
                         VALUES (:sid, :code) ON CONFLICT DO NOTHING"""),
                 {"sid": scoring_id, "code": code},
             )
-
     return {
         "application_id": str(app_id),
         "scoring_id": str(scoring_id),

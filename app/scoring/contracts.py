@@ -1,7 +1,4 @@
-"""Договорённый интерфейс для DS; scoring здесь намеренно НЕ реализован.
-
-Все денежные значения Decimal, никогда float. Реальный scorer подключим в BE-07.
-"""
+"""Typed contracts for deterministic loan scoring."""
 from decimal import Decimal
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -16,6 +13,28 @@ class StrictMoney(BaseModel):
     def no_float_for_decimal(cls, value):
         if isinstance(value, float):
             raise ValueError('Денежные поля и ставки должны передаваться Decimal или строкой')
+        return value
+
+
+class BankHistoryInput(BaseModel):
+    status: Literal['COMPLETE', 'INCOMPLETE', 'NO_ACCOUNTS']
+    period_months: int = Field(ge=0, default=0)
+    account_count: int = Field(ge=0, default=0)
+    operations_count: int = Field(ge=0, default=0)
+    avg_monthly_sales: Decimal | None = None
+    avg_monthly_operating_out: Decimal | None = None
+    monthly_sales: list[Decimal] = Field(default_factory=list)
+    period_start: str | None = None
+    period_end: str | None = None
+    months: list[str] = Field(default_factory=list)
+    expected_coverage: int = Field(ge=0, default=0)
+    covered_account_months: int = Field(ge=0, default=0)
+
+    @field_validator('avg_monthly_sales', 'avg_monthly_operating_out', 'monthly_sales', mode='before')
+    @classmethod
+    def reject_float(cls, value):
+        if isinstance(value, float) or (isinstance(value, list) and any(isinstance(x, float) for x in value)):
+            raise ValueError('Банковские денежные значения не должны быть float')
         return value
 
 
@@ -34,6 +53,7 @@ class ScoringInput(StrictMoney):
     max_term: int | None = None
     credit_history_flag: Literal['good', 'minor_delay', 'critical', 'unknown']
     company_registry_flag: Literal['active', 'inactive', 'mismatch', 'unknown']
+    bank_history: BankHistoryInput | None = None
 
 
 class OfferCandidate(StrictMoney):

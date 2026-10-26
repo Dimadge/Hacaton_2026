@@ -8,22 +8,19 @@ from app.scoring.finance import (
     calculate_annuity_payment,
 )
 from app.scoring.rules import evaluate_score_and_risk
+from app.scoring.bank_history import calculate_bank_score, combine_score, risk_for_score
 from app.scoring.alternatives import generate_alternative_offers
 
-RULE_VERSION = "rules-v1"
+RULE_VERSION = "rules-v2-bank"
 
 
 def score_application(data: ScoringInput) -> ScoringOutput:
     reasons: List[str] = []
-
-    # расчет финансовых лимитов
     cash_flow = calculate_cash_flow(data.monthly_revenue, data.operating_expenses)
     max_payment = calculate_max_new_payment(cash_flow, data.existing_debt_payments)
     requested_payment = calculate_annuity_payment(
         data.requested_amount, data.demo_rate, data.term_months
     )
-
-    # оценка рейтинга заемщика и категории риска
     score, risk_level, score_reasons = evaluate_score_and_risk(
         revenue=data.monthly_revenue,
         expenses=data.operating_expenses,
@@ -33,10 +30,18 @@ def score_application(data: ScoringInput) -> ScoringOutput:
         company_registry_flag=data.company_registry_flag,
     )
     reasons.extend(score_reasons)
+    bank_factor = calculate_bank_score(data.bank_history, data.monthly_revenue)
+    if bank_factor.score is not None:
+        score = combine_score(score, bank_factor.score)
+        risk_level = risk_for_score(score)
+        reasons = [r for r in reasons if r not in ("RISK_MEDIUM", "RISK_HIGH")]
+        if risk_level == "MEDIUM":
+            reasons.append("RISK_MEDIUM")
+        elif risk_level == "HIGH":
+            reasons.append("RISK_HIGH")
+    reasons.extend(bank_factor.reason_codes)
 
     candidates: List[OfferCandidate] = []
-
-    # формирование рекомендаций по решению
     if data.company_registry_flag == "inactive":
         decision_hint = "REJECT"
     elif data.credit_history_flag == "critical":
@@ -64,7 +69,6 @@ def score_application(data: ScoringInput) -> ScoringOutput:
             decision_hint = "COUNTER_OFFER"
             if "PAYMENT_OVER_LIMIT" not in reasons:
                 reasons.append("PAYMENT_OVER_LIMIT")
-
             candidates = generate_alternative_offers(
                 requested_amount=data.requested_amount,
                 requested_term=data.term_months,
@@ -77,7 +81,6 @@ def score_application(data: ScoringInput) -> ScoringOutput:
                 decision_hint = "REJECT"
 
     unique_reasons = list(dict.fromkeys(reasons))
-
     return ScoringOutput(
         score=score,
         risk_level=risk_level,
